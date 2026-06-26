@@ -1,0 +1,74 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Pytest
+.pytest_cache/
+__pytest__/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+
+# Pygame
+pygame*_
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific - Generated data and models
+logs/
+saved_models/
+training_log.txt
+*.csv
+*.json
+
+# Data and temporary files
+*.dat
+*.tmp
+*.log
+
+# Environment files
+.env
+.env.local
+.env.*.local

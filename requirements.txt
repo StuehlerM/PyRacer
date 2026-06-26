@@ -1,0 +1,7 @@
+# Use pygame-ce on Windows (community edition with pre-built wheels)
+# On Linux/Mac: use 'pygame' instead
+pygame-ce>=2.5.0
+torch>=2.1.0
+numpy>=1.24.0
+matplotlib>=3.8.0
+tensorboard>=2.15.0
