@@ -55,6 +55,7 @@ class DQN(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Define layers
+        # DQN maps state features to one Q-value per discrete action.
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, output_dim)
@@ -69,6 +70,7 @@ class DQN(nn.Module):
         """Initialize weights with Xavier uniform initialization."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
+                # Xavier keeps activations/gradients in workable range at start of training.
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -83,6 +85,7 @@ class DQN(nn.Module):
         Returns:
             torch.Tensor - Q-values for each action, shape (batch_size, output_dim)
         """
+        # Hidden layers learn compact state features before final layer scores each action.
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         return self.fc3(x)
@@ -104,6 +107,7 @@ class DQN(nn.Module):
         else:
             # Greedy action (exploitation)
             with torch.inference_mode():
+                # inference_mode skips autograd bookkeeping and is cheaper than no_grad for pure inference.
                 state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.forward(state_tensor)
                 return q_values.argmax().item()
@@ -146,6 +150,7 @@ class DuelingDQN(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Feature layer
+        # Shared trunk learns state features once, then splits into value and advantage heads.
         self.feature_layer = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
@@ -177,6 +182,7 @@ class DuelingDQN(nn.Module):
         """Initialize weights with Xavier uniform initialization."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
+                # Same initializer helps deeper value/advantage streams start stable.
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -193,13 +199,11 @@ class DuelingDQN(nn.Module):
         """
         features = self.feature_layer(x)
         
-        # Calculate value and advantage
+        # V(s) scores state quality; A(s,a) scores which action is better than average in that state.
         value = self.value_stream(features)
         advantage = self.advantage_stream(features)
         
-        # Combine to get Q-values
-        # Q(s,a) = V(s) + A(s,a) - mean(A(s))
-        # Detach mean to prevent gradient flow through it (common practice)
+        # Subtracting mean(A) makes decomposition identifiable so V and A cannot shift arbitrarily.
         q_values = value + (advantage - advantage.mean(dim=1, keepdim=True).detach())
         
         return q_values
@@ -219,6 +223,7 @@ class DuelingDQN(nn.Module):
             return random.randint(0, self.output_dim - 1)
         else:
             with torch.inference_mode():
+                # Action selection is inference only, so no gradient tracking needed here.
                 state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.forward(state_tensor)
                 return q_values.argmax().item()
@@ -256,6 +261,7 @@ class ConvDQN(nn.Module):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         # Convolutional layers
+        # ConvDQN shows classic Atari-style setup: pixels in, spatial features out, Q-values last.
         self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=8, stride=4)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
@@ -277,6 +283,7 @@ class ConvDQN(nn.Module):
         """Initialize weights with Xavier uniform initialization."""
         for m in self.modules():
             if isinstance(m, (nn.Linear, nn.Conv2d)):
+                # Xavier also helps conv stacks avoid starting too saturated or too tiny.
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
@@ -291,6 +298,7 @@ class ConvDQN(nn.Module):
         Returns:
             torch.Tensor - Q-values for each action, shape (batch_size, output_dim)
         """
+        # Convs learn local visual patterns before fully connected layers rank actions.
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -319,6 +327,7 @@ class ConvDQN(nn.Module):
             return random.randint(0, self.output_dim - 1)
         else:
             with torch.inference_mode():
+                # Pure evaluation path: inference_mode saves memory versus tracking gradients.
                 # Convert numpy array to tensor and add batch dimension
                 state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.forward(state_tensor)

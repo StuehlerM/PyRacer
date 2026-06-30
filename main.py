@@ -20,6 +20,7 @@ from utils.config import config
 
 
 def main():
+    # Human-play entry point: shares same game core as training/testing, but skips RL loop.
     print("PyRacer - 2D Racing Game")
     print("========================")
     print("\nControls:")
@@ -36,7 +37,7 @@ def main():
     print("Letter keys (WASD) are free for future features.")
     print("\nPress ESC to exit...")
     
-    # Create and run game
+    # Main loop lives inside Game so keyboard play and RL modes use one simulation code path.
     game = Game(headless=False)
     
     try:

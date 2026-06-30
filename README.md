@@ -1,6 +1,6 @@
 # PyRacer - 2D Reinforcement Learning Racing Game
 
-A complete 2D racing game where an AI agent learns to drive on procedurally generated tracks using PyTorch reinforcement learning. The project demonstrates a full RL pipeline from environment design to agent training and evaluation.
+A complete 2D racing game where an AI agent learns to drive on procedurally generated tracks using PyTorch. The project supports two fundamentally different learning approaches: **Reinforcement Learning (DQN)** and **JEPA (Joint Embedding Predictive Architecture)** — a self-supervised world model approach without reward signals.
 
 ---
 
@@ -8,10 +8,13 @@ A complete 2D racing game where an AI agent learns to drive on procedurally gene
 
 - **Procedural Track Generation**: Random 2D tracks with Catmull-Rom splines for smooth, natural curves
 - **Physics-based Car**: Realistic car physics with acceleration, braking, steering, and friction
-- **RL Agent**: Double DQN and Dueling DQN implementations with uniform or prioritized experience replay
+- **Two Learning Approaches**:
+  - **DQN (RL)**: Double DQN and Dueling DQN with uniform or prioritized experience replay
+  - **JEPA**: Self-supervised world model with CEM planning — no reward signal needed
 - **Sensor-based State**: 7 raycast sensors for environment perception (mimics real car sensors)
 - **Complete Training Pipeline**: Training, testing, logging, and model checkpointing
 - **Multi-track Training**: Support for training on multiple tracks for better generalization
+- **Comparison Tools**: Side-by-side training with metrics and plots
 - **Human vs AI Modes**: Play manually or watch the AI learn
 
 ## Installation
@@ -73,6 +76,25 @@ python train.py --episodes 1000 --multi-track --num-tracks 5
 
 # Continue training from a saved model
 python train.py --episodes 500 --load saved_models/best_model.pth
+
+# Train using JEPA (self-supervised world model, no rewards)
+python train.py --approach jepa --episodes 1000
+
+# Train using DQN (explicit, same as default)
+python train.py --approach dqn --episodes 1000
+```
+
+### Compare DQN vs JEPA
+
+```bash
+# Run side-by-side comparison with plots
+python compare.py --episodes 500
+
+# Quick comparison without rendering
+python compare.py --episodes 200 --no-plot
+
+# Custom output directory
+python compare.py --episodes 500 --output my_comparison
 ```
 
 ### Test a Trained Agent
@@ -86,6 +108,9 @@ python test.py --model saved_models/best_model.pth --compare --episodes 20
 
 # Test on multiple tracks
 python test.py --model saved_models/best_model.pth --multi-track --num-tracks 5 --episodes 5
+
+# Test a JEPA model
+python test.py --model saved_models/best_model.pth --approach jepa --episodes 10 --render
 ```
 
 ---
@@ -101,22 +126,22 @@ The PyRacer project follows a modular architecture with clear separation of conc
 │                        PyRacer                              │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  ┌─────────────┐      ┌─────────────┐    ┌─────────────┐    │
-│  │   game/     │      │    rl/      │    │   utils/    │    │
-│  │  Game Loop  │◄────►│ RL Agent    │    │ Config/     │    │
-│  │  & Physics  │      │ & Models    │    │ Helpers     │    │
-│  └─────────────┘      └─────────────┘    └─────────────┘    │
-│          ▲                  ▲  ▼                  ▲         │
-│          │                  │  │                  │         │
-│  ┌───────┴──────┐  ┌────────┴────────────►┌───────┴───────┐ │
-│  │  main.py     │  │                      │ test.py       │ │
-│  │  (Human)     │  │                      │ (Evaluation)  │ │
-│  └──────────────┘  │                      └───────────────┘ │
-│                    │                                        │
-│              ┌─────┴─────┐                                  │
-│              │ train.py  │                                  │
-│              │ (Training)│                                  │
-│              └───────────┘                                  │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────┐  ┌──────┐  │
+│  │   game/     │  │    rl/      │  │  jepa/   │  │utils/│  │
+│  │  Game Loop  │◄─┤ DQN Agent   │  │  JEPA    │  │Config│  │
+│  │  & Physics  │  │ & Models    │  │  Agent   │  │      │  │
+│  └─────────────┘  └─────────────┘  └──────────┘  └──────┘  │
+│          ▲              ▲                ▲           ▲       │
+│          │              │                │           │       │
+│  ┌───────┴──────┐  ┌───┴────────────────┴───┐  ┌───┴─────┐ │
+│  │  main.py     │  │      train.py           │  │test.py  │ │
+│  │  (Human)     │  │ --approach {dqn,jepa}   │  │         │ │
+│  └──────────────┘  └────────────────────────┘  └─────────┘ │
+│                           ▲                                 │
+│                    ┌──────┴──────┐                           │
+│                    │ compare.py  │                           │
+│                    │ (DQN vs JEPA)│                          │
+│                    └─────────────┘                           │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -137,12 +162,18 @@ Pyracer/
 │   ├── model.py          # Neural network architectures (DQN, Dueling DQN, ConvDQN)
 │   ├── memory.py         # Experience replay buffer
 │   └── environment.py    # Gym-like RL environment wrapper
+├── jepa/
+│   ├── __init__.py        # Package exports
+│   ├── agent.py          # JEPA Agent with CEM planning
+│   ├── model.py          # Encoder, Predictor, Target Encoder, VICReg loss
+│   └── memory.py         # Transition buffer + Goal buffer (no rewards)
 ├── utils/
 │   ├── __init__.py
 │   └── config.py         # All configuration and hyperparameters
 ├── main.py               # Human play entry point
-├── train.py              # Training entry point
+├── train.py              # Training entry point (--approach dqn|jepa)
 ├── test.py               # Testing and evaluation entry point
+├── compare.py            # Side-by-side DQN vs JEPA comparison
 ├── requirements.txt      # Dependencies
 ├── README.md             # This file
 └── AGENTS.md             # Instructions for AI agents
@@ -207,6 +238,32 @@ Pyracer/
   - Already-normalized sensor, speed, heading, and progress state
   - Statistics tracking (lap times, rewards)
   - Rendering support
+
+### 🧠 JEPA — Self-Supervised World Model (`jepa/` package)
+
+JEPA (Joint Embedding Predictive Architecture) is a fundamentally different approach from RL:
+
+| Aspect | DQN (RL) | JEPA |
+|--------|----------|------|
+| Learning signal | Reward from environment | Self-supervised prediction |
+| What it learns | Q-values (expected future reward) | World dynamics in latent space |
+| Action selection | Epsilon-greedy on Q-values | CEM planning through world model |
+| Goal | Maximize cumulative reward | Reach target latent states |
+
+#### World Model (`model.py`)
+- **StateEncoder**: Maps 11-dim sensor state to 64-dim latent representation
+- **Predictor**: Given (z_t, action) predicts z_{t+1} in latent space
+- **Target Encoder**: EMA copy of encoder — provides stable prediction targets
+- **VICReg Loss**: Variance-Invariance-Covariance regularization prevents collapse
+
+#### JEPA Agent (`agent.py`)
+- **World Model Training**: Self-supervised, no reward signal needed
+- **CEM Planner**: Cross-Entropy Method for action selection via planning
+- **Goal Definition**: High-progress states become planning targets automatically
+
+#### Memory Buffers (`memory.py`)
+- **TransitionBuffer**: Stores (state, action, next_state) — no rewards!
+- **GoalBuffer**: Latent encodings of "successful" states (planning targets)
 
 ---
 
@@ -321,6 +378,35 @@ Where:
 
 This helps the agent learn which states are valuable without having to learn the effect of each action for each state.
 
+### 🧠 How JEPA Works
+
+JEPA takes a completely different approach — no rewards needed:
+
+#### Phase 1: World Model Learning (Self-supervised)
+```
+1. Agent explores randomly (no reward needed)
+2. For each transition (state, action, next_state):
+   a. Encode state -> latent z_t (via online encoder)
+   b. Predict next latent: predictor(z_t, action) -> z_pred
+   c. Encode actual next_state -> z_target (via EMA target encoder)
+   d. Loss = ||z_pred - z_target||^2 + VICReg regularization
+3. Update encoder + predictor via backprop
+4. Update target encoder via EMA (slow-moving average)
+```
+
+#### Phase 2: Planning with CEM (after warmup)
+```
+1. Encode current state -> z_current
+2. Get goal from goal buffer (average of "good" latent states)
+3. CEM: sample 64 random action sequences, simulate through world model
+4. Score each: how close does final predicted state get to goal?
+5. Keep top-10, refine distribution, repeat 3 times
+6. Execute first action of best sequence, re-plan next step
+```
+
+#### Key Insight
+DQN needs a carefully designed reward function. JEPA defines "what's good" by observing which states have high track progress, encoding them, and planning to reach similar states.
+
 ## Configuration
 
 All hyperparameters and settings are in `utils/config.py`:
@@ -377,6 +463,20 @@ LEARNING_STARTS = 1000
 TARGET_UPDATE_MODE = "polyak"
 TARGET_UPDATE_FREQ = 1000
 POLYAK_TAU = 0.005
+```
+
+### JEPA Hyperparameters
+```python
+DEFAULT_APPROACH = "dqn"              # "dqn" or "jepa"
+JEPA_LATENT_DIM = 64                  # Latent space dimension
+JEPA_HIDDEN_DIM = 128                 # Network hidden size
+JEPA_EMA_TAU = 0.005                 # Target encoder EMA rate
+JEPA_VICREG_LAMBDA = 25.0            # Variance regularization
+JEPA_PLANNING_HORIZON = 10           # Steps to plan ahead
+JEPA_CEM_CANDIDATES = 64             # Action sequences evaluated
+JEPA_WARMUP_STEPS = 2000             # Random exploration before planning
+JEPA_BATCH_SIZE = 128                # World model batch size
+JEPA_MEMORY_SIZE = 50000             # Transition buffer size
 ```
 
 ### Rewards
@@ -490,13 +590,16 @@ On a modern CPU (Intel i7 / Ryzen 7):
 # Required
 --episodes          Number of training episodes (default: 10000)
 
+# Approach Selection
+--approach          Learning approach: dqn or jepa (default: dqn)
+
 # Training Options
 --render            Render training visualization (slower)
 --load             Path to load existing model from
 --save-dir         Directory to save models (default: saved_models)
 --log-dir          Directory to save training logs (default: logs)
 
-# RL Hyperparameters
+# RL Hyperparameters (DQN only)
 --batch-size       Batch size for training (default: 64)
 --lr               Learning rate (default: 0.001)
 --gamma            Discount factor (default: 0.99)
@@ -508,7 +611,7 @@ On a modern CPU (Intel i7 / Ryzen 7):
 --multi-track      Train on multiple tracks
 --num-tracks       Number of tracks for multi-track (default: 3)
 
-# Algorithm Options
+# Algorithm Options (DQN only)
 --dueling          Use Dueling DQN (default: False)
 --test             Test mode (run trained agent without training)
 --test-episodes    Number of test episodes (default: 10)
@@ -521,6 +624,7 @@ On a modern CPU (Intel i7 / Ryzen 7):
 --model            Path to trained model file
 
 # Options
+--approach        Learning approach: dqn or jepa (default: dqn)
 --episodes        Number of test episodes (default: 10)
 --render          Render the test
 --compare        Compare random vs trained agent
@@ -528,6 +632,18 @@ On a modern CPU (Intel i7 / Ryzen 7):
 --num-tracks     Number of tracks for multi-track (default: 5)
 --output         Output directory for results
 --record         Record test results to file
+```
+
+### Comparison (`compare.py`)
+
+```bash
+# Options
+--episodes        Number of training episodes per approach (default: 500)
+--render          Render training (slower)
+--output          Output directory for results and plots (default: comparison_results)
+--seed            Random seed for reproducibility (default: 42)
+--log-freq        Log every N episodes (default: 10)
+--no-plot         Skip matplotlib plot generation
 ```
 
 ---
@@ -568,6 +684,7 @@ Training progress is logged to:
 - [ ] LSTM for temporal dependencies
 - [ ] Curiosity-driven exploration (ICM)
 - [ ] Distributional RL (C51, QR-DQN)
+- [x] JEPA (self-supervised world model with CEM planning)
 
 ### State Representation
 - [ ] CNN-based state from rendered frame
@@ -592,7 +709,7 @@ Training progress is logged to:
 - [ ] Unit tests for game components
 - [ ] RL algorithm validation
 - [ ] Benchmarking suite
-- [ ] Comparison with other algorithms
+- [x] Comparison with other algorithms (compare.py)
 
 ## License
 

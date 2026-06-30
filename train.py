@@ -97,10 +97,12 @@ def parse_args():
 
 def set_seed(seed, deterministic=False):
     """Seed Python, NumPy, and torch random sources."""
+    # Seed every RNG touched by training so repeated runs differ less by luck than by code.
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
+        # CUDA kernels have separate RNG state, so GPU training needs its own seed too.
         torch.cuda.manual_seed_all(seed)
     if deterministic:
         torch.use_deterministic_algorithms(True, warn_only=True)
@@ -135,7 +137,8 @@ class TrainingLogger:
         self.best_model_path = os.path.join(save_dir, f'best_model_{self.timestamp}.pth')
         self.latest_model_path = os.path.join(save_dir, f'model_{self.timestamp}.pth')
         
-        # Initialize CSV file
+        # CSV captures episode-by-episode time series; JSON freezes config for later reproduction.
+        # Reading both together helps explain not only what happened, but under which setup.
         with open(self.csv_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -228,7 +231,7 @@ def train_agent(args):
         print(f"Prioritized replay: {args.prioritized}")
     print()
     
-    # Initialize logger
+    # Logger gives training artifacts same role as lab notes: rewards over time plus config snapshot.
     logger = TrainingLogger(args.log_dir, args.save_dir)
     logger.save_config(args)
     
@@ -280,7 +283,7 @@ def train_agent(args):
         agent.load(args.load)
         print("Model loaded!")
     
-    # Training loop
+    # RL training is episode-based: reset track, then learn from many env steps inside episode.
     start_time = time.time()
     best_lap_time = float('inf')
     best_eval_score = -float('inf')
@@ -289,7 +292,7 @@ def train_agent(args):
     
     try:
         for episode in range(1, args.episodes + 1):
-            # Reset environment
+            # Each episode starts fresh so agent sees full rollout from initial state to terminal state.
             state = env.reset()
             
             # Track episode statistics
@@ -299,7 +302,7 @@ def train_agent(args):
             lap_completed = False
             current_lap_time = 0
             
-            # Run episode
+            # Inner loop is interaction phase: act, observe reward, store transition, update policy.
             done = False
             while not done:
                 # Select action
@@ -315,6 +318,7 @@ def train_agent(args):
                 loss = agent.update()
                 if loss is not None:
                     episode_loss += loss
+                # Exploration schedule follows env steps, because action count drives data collection pace.
                 agent.on_env_step()
                 
                 # Update state
@@ -337,7 +341,7 @@ def train_agent(args):
             # Update agent statistics
             agent.increment_episode()
             
-            # Calculate running average
+            # Moving average smooths noisy episodic rewards before "best model" decision is made.
             running_rewards.append(episode_reward)
             if len(running_rewards) > best_window:
                 running_rewards.pop(0)
@@ -375,11 +379,11 @@ def train_agent(args):
                     steps=agent_stats['env_steps']
                 )
             
-            # Save model periodically
+            # Keep latest checkpoint for resume/debug, even when it is worse than best smoothed policy.
             if episode % args.save_freq == 0:
                 logger.save_model(agent, is_best=False)
         
-        # Save final model
+        # Final save preserves most recent training state; best save preserves strongest observed policy.
         logger.save_model(agent, is_best=False)
         
     except KeyboardInterrupt:
@@ -438,7 +442,7 @@ def test_agent(args):
     else:
         print("No model loaded. Testing with untrained agent.")
     
-    # Testing loop
+    # Evaluation loop measures learned behavior only, so action sampling stays greedy.
     total_rewards = []
     lap_times = []
     completed_laps = 0

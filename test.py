@@ -61,6 +61,7 @@ def parse_args():
 
 def set_seed(seed, deterministic=False):
     """Seed Python, NumPy, and torch random sources."""
+    # Evaluation also needs fixed RNGs so score changes reflect model changes, not new tracks/noise.
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -108,6 +109,7 @@ class TestResult:
     
     def get_summary(self):
         """Get summary statistics."""
+        # Reward is useful, but lap completion and collision rate often tell policy quality more directly.
         avg_reward = np.mean(self.episode_rewards) if self.episode_rewards else 0
         std_reward = np.std(self.episode_rewards) if self.episode_rewards else 0
         avg_lap_time = np.mean(self.lap_times) if self.lap_times else 0
@@ -179,7 +181,7 @@ def test_agent(agent, env, num_episodes, render=False, name="Agent"):
         steps = 0
         
         while not done:
-            # Select action
+            # Testing disables exploration so results show learned policy, not random epsilon actions.
             action = agent.select_action(state, explore=False)
             
             # Take action
@@ -243,14 +245,14 @@ def compare_agents(args):
     track = Track(seed=args.seed) if args.seed is not None else None
     env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
     
-    # Test random agent
+    # Random agent is baseline: if trained policy cannot beat this, learning pipeline needs work.
     random_agent = RandomAgent(config.ACTION_DIM)
     random_result = test_agent(
         random_agent, env, args.episodes,
         render=args.render, name="Random Agent"
     )
     
-    # Test trained agent
+    # Same environment and metrics keep comparison fair across baseline and learned policy.
     trained_result = None
     if args.model and os.path.exists(args.model):
         if args.approach == 'jepa':
@@ -270,7 +272,7 @@ def compare_agents(args):
             render=args.render, name="Trained Agent"
         )
         
-        # Print comparison
+        # Compare completion, time, and reward together; one metric alone can hide brittle behavior.
         print("\n" + "=" * 60)
         print("Comparison Summary")
         print("=" * 60)
@@ -314,7 +316,7 @@ def test_multi_track(args):
     """
     print(f"\nTesting on {args.num_tracks} tracks...")
     
-    # Create multi-track environment with eval_mode for testing
+    # Multi-track eval checks generalization instead of memorization on one lucky procedural track.
     env = MultiTrackEnv(
         num_tracks=args.num_tracks,
         render=args.render,
@@ -341,7 +343,7 @@ def test_multi_track(args):
         print("No model specified. Using random agent.")
         agent = RandomAgent(config.ACTION_DIM)
     
-    # Test on multiple tracks
+    # More tracks widen distribution of states, making summary metrics harder to game.
     result = test_agent(agent, env, args.episodes * args.num_tracks,
                        render=args.render, name="Multi-Track Test")
     

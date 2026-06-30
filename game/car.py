@@ -65,7 +65,7 @@ class Car:
         self.steering_angle = clamp(self.steering_angle + steering_input, 
                                      -self.max_steering, self.max_steering)
         
-        # Return steering to center when no steering input
+        # Real cars self-center; easing wheel back prevents "stuck turn" feel in digital input.
         if abs(steering) < 1e-3:  # No steering input
             # Return to centre at most `steering_return_speed * dt` per tick.
             max_step  = self.steering_return_speed * dt
@@ -76,7 +76,7 @@ class Car:
         
         # Apply throttle/brake with configurable acceleration curve
         if throttle > 0:
-            # Accelerate with selected curve for more natural feel
+            # Nonlinear curves fake engine/drag behavior without simulating full drivetrain physics.
             curve_type = config.ACCELERATION_CURVE
             if curve_type == "s_curve":
                 acceleration_amount = s_curve_acceleration(
@@ -102,15 +102,13 @@ class Car:
         # Clamp speed
         self.speed = clamp(self.speed, -self.max_speed, self.max_speed)
         
-        # If speed is very low, we can't steer effectively
-        # Use a threshold of 1 pixel/second (very slow)
+        # Steering needs forward motion; below threshold we avoid sideways-looking pivot behavior.
         if abs(self.speed) < 1.0:
             # Just move in the current direction
             direction = np.array([np.cos(self.angle), np.sin(self.angle)])
             self.velocity = direction * self.speed
         else:
-            # Apply steering to direction
-            # The car's actual direction is angle + steering_angle
+            # `effective_angle` is where wheels want velocity to go, not raw body heading alone.
             effective_angle = self.angle + self.steering_angle
             direction = np.array([np.cos(effective_angle), np.sin(effective_angle)])
             self.velocity = direction * self.speed
@@ -120,6 +118,7 @@ class Car:
         self.angle = (self.angle + np.pi) % (2 * np.pi) - np.pi
         
         if hasattr(self, '_cached_nearby_position') and self._cached_nearby_position is not None:
+            # Nearby-wall cache only matters locally; refresh after big move to avoid stale segments.
             if np.linalg.norm(self.position - self._cached_nearby_position) > 50:
                 self._cached_nearby_segments = None
                 self._cached_nearby_position = None
@@ -156,20 +155,20 @@ class Car:
         readings = []
         max_distance = config.SENSOR_MAX_DISTANCE
         
-        # Cache track boundaries to avoid repeated conversions in ray casts
+        # Track can expose NumPy-ready arrays so sensors skip rebuilding segment lists every frame.
         if hasattr(track, 'get_boundary_arrays'):
             boundaries = track.get_boundary_arrays()
         else:
             boundaries = track.get_boundaries()
         
-        # Pre-calculate car angle cos and sin for efficiency
+        # Reusing car sin/cos avoids 7 extra trig calls per frame, which matters during training.
         car_cos = np.cos(self.angle)
         car_sin = np.sin(self.angle)
         
-        # Get nearby segments for spatial partitioning optimization - only once per call
+        # Spatial partitioning narrows ray tests to nearby walls instead of whole track.
         nearby_segment_indices = None
         if hasattr(track, 'get_nearby_segments'):
-            # Use cached value if available (for same position), otherwise compute
+            # Sensors share same origin, so one nearby lookup can serve every ray this frame.
             if not hasattr(self, '_cached_nearby_segments') or self._cached_nearby_segments is None:
                 self._cached_nearby_segments = track.get_nearby_segments(
                     tuple(self.position), max_distance + 50
@@ -181,7 +180,7 @@ class Car:
             # Absolute sensor angle = car angle + sensor angle
             absolute_angle = self.angle + sensor_angle
             
-            # Use angle addition formulas to avoid recalculating cos/sin
+            # Angle-sum identities rotate each sensor from car heading cheaper than fresh trig pairs.
             # cos(a+b) = cos(a)cos(b) - sin(a)sin(b)
             # sin(a+b) = sin(a)cos(b) + cos(a)sin(b)
             sensor_cos = np.cos(sensor_angle)
@@ -199,7 +198,7 @@ class Car:
                 nearby_segment_indices
             )
             
-            # Normalize distance (0 = hit immediately, 1 = max distance)
+            # RL agent learns from scale-consistent inputs; 0 means wall on bumper, 1 means clear lane.
             normalized = distance / max_distance
             if normalized > 1.0:
                 normalized = 1.0
@@ -218,8 +217,7 @@ class Car:
         Returns:
             tuple: (is_colliding, collision_info)
         """
-        # Use a simple circle for collision detection
-        # The circle radius is approximately the car's diagonal
+        # Circle is cheaper than rotated-box collision and good enough for forgiving arcade handling.
         radius = np.sqrt(self.width**2 + self.height**2) / 2
         
         return track.check_collision(tuple(self.position), radius)
@@ -262,7 +260,7 @@ class Car:
             (-half_width, half_height)     # Top-left
         ]
         
-        # Rotate and position corners
+        # Rotation turns local car shape into world-space polygon for drawing.
         rotated_corners = []
         for x, y in corners:
             # Rotate
@@ -281,7 +279,7 @@ class Car:
         # Draw car outline
         pygame.draw.polygon(screen, config.Colors.WHITE, rotated_corners, 2)
         
-        # Draw direction indicator (front of car)
+        # Front marker makes heading obvious because rectangle alone is symmetric at speed.
         front_center = (
             self.position[0] + half_height * np.cos(self.angle),
             self.position[1] + half_height * np.sin(self.angle)
@@ -307,7 +305,7 @@ class Car:
             absolute_angle = self.angle + angle
             direction = np.array([np.cos(absolute_angle), np.sin(absolute_angle)])
             
-            # Sensor end point at max distance
+            # Debug rays always draw full length; color encodes actual normalized hit distance.
             end_x = self.position[0] + direction[0] * config.SENSOR_MAX_DISTANCE
             end_y = self.position[1] + direction[1] * config.SENSOR_MAX_DISTANCE
             

@@ -75,6 +75,7 @@ class Track:
         # Generate control points in a circular pattern with randomness
         # Freya Holmer's approach: use control points that the spline passes through
         num_control_points = max(self.complexity + 4, 6)  # At least 6 control points
+        # Circular ordering gives simple closed loop; spline later wraps with modulo indices.
         
         # Create control points around a circle with random offsets
         # Use a base radius and add randomness for interesting tracks
@@ -86,6 +87,7 @@ class Track:
             
             # Random offset from circle for variety
             # This creates the "wobbly" circular track
+            # Same angle order + different radii keeps loop readable while adding bends/chicanes.
             offset = self._uniform(-radius * 0.3, radius * 0.3)
             
             x = center_x + (radius + offset) * np.cos(angle)
@@ -124,6 +126,7 @@ class Track:
         self.start_idx = start_idx
         start_point = self.waypoints[start_idx]
         next_point = self.waypoints[(start_idx + 1) % len(self.waypoints)]
+        # Modulo wraps final waypoint back to first so start/finish still has "next" segment.
         
         # Start in the middle of the track
         self.start_position = self._get_center_point(start_point, next_point, offset=0)
@@ -164,6 +167,7 @@ class Track:
         spline_points = []
         
         for i in range(n):
+            # Closed-loop indexing: p0/p1/p2/p3 are prev, current, next, next-next control points.
             p0 = points[(i - 1) % n]
             p1 = points[i % n]
             p2 = points[(i + 1) % n]
@@ -172,7 +176,9 @@ class Track:
             # Generate intermediate points along this segment (endpoint=False
             # avoids duplicating control points shared between segments)
             for t in np.linspace(0, 1, num_intermediate, endpoint=False):
+                # t moves from p1 toward p2; p0 and p3 shape tangent so curve stays smooth.
                 # Catmull-Rom interpolation formula
+                # Key property: curve passes through control points, unlike Bezier handles.
                 x = 0.5 * ((2 * p1[0]) + 
                           (-p0[0] + p2[0]) * t + 
                           (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t**2 + 
@@ -270,6 +276,7 @@ class Track:
                 tangent = tangent / tangent_len
                 # Miter scale: how much we need to extend offset to maintain
                 # constant distance from both edges. Clamped to prevent blow-up.
+                # Sharp corners make tangent tiny, which would explode offset without clamp.
                 miter_scale = min(1.0 / tangent_len, max_miter)
             else:
                 # Near-180° turn: edges point in opposite directions
@@ -277,6 +284,7 @@ class Track:
                 miter_scale = 1.0
             
             # Calculate normal (perpendicular to tangent, pointing left)
+            # Normal says "which way is road edge" relative to centerline travel direction.
             normal = np.array([-tangent[1], tangent[0]])
             normals.append(normal)
             miter_scales.append(miter_scale)
@@ -288,6 +296,7 @@ class Track:
             scale = miter_scales[i]
             
             offset = half_width * scale
+            # Using +/- same normal keeps both borders symmetric around centerline.
             inner_point = curr + normal * offset
             outer_point = curr - normal * offset
             
@@ -418,6 +427,7 @@ class Track:
         self._spatial_grid = {}
         
         # Assign each segment to grid cells
+        # Spatial grid turns "check all walls" into "check walls near this region".
         for idx, (start, end) in enumerate(self.segments):
             start = np.array(start)
             end = np.array(end)
@@ -503,6 +513,7 @@ class Track:
         max_cell_y = min(grid_height - 1, max_cell_y)
         
         # Collect all unique segment indices from nearby cells
+        # Query cost scales with nearby buckets, not total track segment count.
         nearby_segments = set()
         for cell_x in range(min_cell_x, max_cell_x + 1):
             for cell_y in range(min_cell_y, max_cell_y + 1):
@@ -579,6 +590,7 @@ class Track:
         if hint is None:
             search_indices = np.arange(n)
         else:
+            # Car usually advances locally, so search near last segment before global fallback.
             search_indices = (int(hint) + np.arange(-5, 6)) % n
 
         closest_segment_idx, closest_point_on_segment, closest_distance = (
@@ -601,6 +613,7 @@ class Track:
         # Add distance along the closest segment
         p1 = waypoints_array[closest_segment_idx]
         if closest_point_on_segment is not None:
+            # Progress comes from projection onto centerline, not raw Euclidean distance to start.
             distance_from_start += float(np.linalg.norm(closest_point_on_segment - p1))
 
         # Return progress (0-1)
@@ -625,8 +638,11 @@ class Track:
         denom = np.einsum('ij,ij->i', edges, edges)
         t = np.zeros(len(indices), dtype=float)
         valid = denom > 1e-12
+        # Dot product projects point onto each segment's direction vector.
         t[valid] = np.einsum('ij,ij->i', ap[valid], edges[valid]) / denom[valid]
+        # Clamp keeps closest point on finite segment instead of infinite line.
         t = np.clip(t, 0.0, 1.0)
+        # Whole batch runs vectorized in NumPy, so many segment tests happen in one pass.
         closest_points = p1 + edges * t[:, None]
         distances = np.linalg.norm(closest_points - position, axis=1)
         best = int(np.argmin(distances))
@@ -651,6 +667,7 @@ class Track:
         for checkpoint in self.checkpoints:
             checkpoint_idx = checkpoint['index']
             if checkpoint_idx != next_checkpoint_idx:
+                # Ordered checkpoints stop shortcutting lap by touching later markers first.
                 continue
 
             # Calculate distance from position to the next expected checkpoint
@@ -688,6 +705,7 @@ class Track:
             # Fill outer boundary with road color
             pygame.draw.polygon(screen, colors.ROAD_COLOR, self.outer_boundary)
             # Cut out inner area with grass to form the ring
+            # Two fills fake polygon-with-hole, since pygame polygons do not support holes directly.
             pygame.draw.polygon(screen, colors.GRASS_COLOR, self.inner_boundary)
             
             # Draw track boundaries (white lines) — closed=True for seamless loop
@@ -698,6 +716,7 @@ class Track:
         for i in range(len(self.waypoints)):
             p1 = self.waypoints[i]
             p2 = self.waypoints[(i + 1) % len(self.waypoints)]
+            # Modulo closes loop so final dash segment reconnects to first waypoint cleanly.
             
             # Draw dashed line
             segment_length = np.linalg.norm(np.array(p2) - np.array(p1))

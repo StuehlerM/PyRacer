@@ -95,6 +95,7 @@ class DQNAgent:
         assert prioritized_alpha >= 0, "prioritized_alpha must be non-negative"
         assert prioritized_beta >= 0, "prioritized_beta must be non-negative"
         
+        # DQN loop: act in env, store transition, sample replay batch, update Q-network.
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.lr = lr
@@ -128,13 +129,13 @@ class DQNAgent:
         self.policy_net.to(self.device)
         self.target_net.to(self.device)
         
-        # Copy policy to target network
+        # Target net starts equal to policy net, then lags behind to stabilize bootstrapped targets.
         self.update_target(hard_update=True)
         
         # Initialize optimizer
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         
-        # Initialize replay buffer
+        # Replay buffer lets learning reuse past experience instead of only latest transition.
         if use_prioritized:
             self.memory = PrioritizedReplayBuffer(
                 memory_size,
@@ -190,6 +191,7 @@ class DQNAgent:
         if not explore:
             return self._greedy_action(state)
         
+        # Epsilon-greedy keeps trying new actions early, then decays toward exploitation later.
         if torch.rand(1).item() < self.epsilon:
             # Random action (exploration)
             return np.random.randint(0, self.action_dim)
@@ -206,13 +208,14 @@ class DQNAgent:
                            Returns None if there are not enough samples in the replay buffer
                            or if the sample returned None.
         """
+        # Delay learning until buffer has diverse experience; early tiny batches are noisy and biased.
         if self.env_steps < self.learning_starts:
             return None
 
         if len(self.memory) < self.batch_size:
             return None
         
-        # Sample a batch
+        # Replay sampling breaks strong frame-to-frame correlations from on-policy gameplay.
         batch = self.memory.sample(self.batch_size)
         if batch is None:
             return None
@@ -224,54 +227,54 @@ class DQNAgent:
             indices = None
             weights = None
         
-        # Convert to PyTorch tensors on the correct device
+        # Minibatches let SGD learn from many past transitions in one update.
         states = torch.from_numpy(states).to(self.device, dtype=torch.float32, non_blocking=True)
         actions = torch.from_numpy(actions).to(self.device, dtype=torch.long, non_blocking=True).unsqueeze(1)
         rewards = torch.from_numpy(rewards).to(self.device, dtype=torch.float32, non_blocking=True)
         next_states = torch.from_numpy(next_states).to(self.device, dtype=torch.float32, non_blocking=True)
         dones = torch.from_numpy(dones.astype(np.float32)).to(self.device, dtype=torch.float32, non_blocking=True)
         
-        # Calculate Q-values for current states
+        # Policy net estimates Q(s, a): expected discounted return for each action now.
         current_q_values = self.policy_net(states)
         
         # Calculate Q-values for next states using target network
         with torch.no_grad():
             if self.use_double_dqn:
-                # Double DQN: use policy network to select action, target network for value
+                # Double DQN splits argmax and evaluation to reduce optimistic overestimation bias.
                 next_actions = self.policy_net(next_states).argmax(dim=1, keepdim=True)
                 next_q_values = self.target_net(next_states)
                 next_q_values = next_q_values.gather(1, next_actions)
             else:
-                # Standard DQN: use target network for both
+                # Vanilla DQN uses max target directly, which is simpler but more overoptimistic.
                 next_q_values = self.target_net(next_states).max(dim=1, keepdim=True)[0]
         
-        # Calculate target Q-values
-        # target = reward + gamma * Q(s', a') * (1 - done)
-        # Ensure all tensors have compatible shapes for broadcasting
+        # Bellman target: Q(s,a) should move toward reward + discounted value of next state.
         rewards = rewards.unsqueeze(1)  # Shape: [batch_size, 1]
         dones = dones.unsqueeze(1)  # Shape: [batch_size, 1]
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
         
-        # Select Q-values for the actions taken
+        # Gather isolates predictions for actions actually taken in replayed transitions.
         current_q_values = current_q_values.gather(1, actions)
         
-        # Calculate loss (Huber loss for stability)
+        # Huber loss is less sensitive than MSE to occasional huge TD errors in RL.
         per_item_loss = F.smooth_l1_loss(current_q_values, target_q_values, reduction='none')
         if self.use_prioritized:
+            # Importance weights correct part of bias from sampling some transitions more often.
             weights_tensor = torch.from_numpy(weights).to(
                 self.device, dtype=torch.float32, non_blocking=True
             ).unsqueeze(1)
             loss = (per_item_loss * weights_tensor).mean()
+            # Updated TD errors become new priorities, so surprising samples stay likely.
             td_errors = (current_q_values - target_q_values).detach().abs().squeeze(1)
             self.memory.update_priorities(indices, td_errors.cpu().numpy() + 1e-6)
         else:
             loss = per_item_loss.mean()
         
-        # Backpropagation
+        # Backprop pushes network so predicted Q-values better match Bellman targets.
         self.optimizer.zero_grad()
         loss.backward()
         
-        # Gradient clipping
+        # Clipping prevents rare large TD errors from causing unstable, exploding updates.
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.grad_clip_norm)
         
         self.optimizer.step()
@@ -288,7 +291,7 @@ class DQNAgent:
         
         self.train_steps += 1
         
-        # Update target network according to the configured mode
+        # Polyak = small smooth updates each step; hard update = occasional full copy.
         if self.target_update_mode == "polyak":
             self.update_target()
         elif self.train_steps % self.target_update_freq == 0:
@@ -300,6 +303,7 @@ class DQNAgent:
         """Advance env-step counter and decay epsilon once per environment step."""
         self.env_steps += 1
         self.steps = self.env_steps
+        # Exploration decays gradually so agent shifts from discovery to exploiting learned values.
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
      
     def update_target(self, hard_update: bool = False):
@@ -312,10 +316,10 @@ class DQNAgent:
                          If False (default), uses Polyak averaging for smooth transition.
         """
         if hard_update or self.polyak_tau == 0:
-            # Hard update: copy all weights
+            # Hard update freezes target between syncs, giving bootstrap targets short-term stability.
             self.target_net.load_state_dict(self.policy_net.state_dict())
         else:
-            # Polyak averaging: smooth interpolation of weights
+            # Polyak averaging moves target slowly, often reducing oscillation versus abrupt copies.
             for param, target_param in zip(self.policy_net.parameters(), self.target_net.parameters()):
                 target_param.data.copy_(self.polyak_tau * param.data + (1 - self.polyak_tau) * target_param.data)
         self.target_net.eval()

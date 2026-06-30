@@ -27,6 +27,7 @@ class RacingEnv:
             max_steps: int - maximum steps per episode
             render_every_n: int - render every Nth explicit render call
         """
+        # Game handles physics/rewards; env exposes standard RL API around it.
         self.game = Game(track=track, headless=not render, render_every_step=False)
         self._render = render
         self.render_every_n = max(1, int(render_every_n))
@@ -47,6 +48,7 @@ class RacingEnv:
         Returns:
             numpy array: initial state
         """
+        # Gym-like loop always starts with reset(), which returns first observation of new episode.
         state = self.game.reset()
         self.episode += 1
         return state
@@ -61,7 +63,7 @@ class RacingEnv:
         Returns:
             tuple: (next_state, reward, done, info)
         """
-        # Map action to game action
+        # RL agent works with compact action IDs; wrapper translates them to game controls.
         if isinstance(action, int):
             # Discrete action
             action_dict = config.ACTIONS.get(action, config.ACTIONS[0])
@@ -70,11 +72,11 @@ class RacingEnv:
         else:
             throttle, steering = action
         
-        # Apply action to game
+        # step() advances one transition in classic observe -> act -> reward -> next_state cycle.
         game_action = (throttle, steering)
         next_state, reward, done, info = self.game.step(game_action)
         
-        # Track episode rewards
+        # info carries side-channel stats without changing learning signal or termination flags.
         info['episode'] = self.episode
         
         # Check for lap completion
@@ -115,6 +117,7 @@ class RacingEnv:
         """
         if self._render:
             self._render_call_count += 1
+            # Throttling render calls keeps training from spending most time drawing frames.
             if self._render_call_count % self.render_every_n == 0:
                 self.game.render()
     
@@ -125,6 +128,7 @@ class RacingEnv:
         Args:
             track: Track - new track
         """
+        # Swapping track here changes task while keeping same RL interface for agent code.
         self.game.track = track
         if hasattr(track, 'reset_progress_hint'):
             track.reset_progress_hint()
@@ -155,13 +159,14 @@ class MultiTrackEnv:
             render_every_n: int - render every Nth explicit render call
             seed: int - optional base seed for reproducible track generation
         """
+        # Multiple tracks reduce overfitting to one layout and improve generalization.
         self.num_tracks = num_tracks
         self.tracks = []
         self.rotation_every = 1 if eval_mode else rotation_every
         self.eval_mode = eval_mode
         self.seed = seed
         
-        # Generate multiple tracks
+        # Harder/evolving tracks create light curriculum: agent must transfer skills across layouts.
         for i in range(num_tracks):
             track_seed = None if seed is None else seed + i
             track = Track(complexity=config.TRACK_COMPLEXITY + i * 2, seed=track_seed)
@@ -183,7 +188,7 @@ class MultiTrackEnv:
         Returns:
             numpy array: initial state
         """
-        # Change track periodically
+        # Periodic rotation exposes agent to varied starts without changing training loop code.
         if self.env.episode > 0 and self.env.episode % self.rotation_every == 0:
             self.current_track_idx = (self.current_track_idx + 1) % self.num_tracks
             self.env.set_track(self.tracks[self.current_track_idx])

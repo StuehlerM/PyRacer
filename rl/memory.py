@@ -24,6 +24,7 @@ class ReplayBuffer:
             state_dim: int - number of values in each state
             action_dtype: numpy dtype - dtype for stored actions
         """
+        # Fixed-capacity replay keeps memory bounded while still reusing old slots.
         self.capacity = capacity
         self.state_dim = state_dim
         self.states = np.zeros((capacity, state_dim), dtype=np.float32)
@@ -45,11 +46,13 @@ class ReplayBuffer:
             next_state: numpy array - next state
             done: bool - whether episode ended
         """
+        # Replay buffer stores transitions out of order so training data is less temporally correlated.
         self.states[self.pos] = np.asarray(state, dtype=np.float32)
         self.actions[self.pos] = action
         self.rewards[self.pos] = reward
         self.next_states[self.pos] = np.asarray(next_state, dtype=np.float32)
         self.dones[self.pos] = done
+        # Circular buffer wraps around and overwrites oldest experience when full.
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
     
@@ -66,6 +69,7 @@ class ReplayBuffer:
         if self.size < batch_size:
             return None
 
+        # Uniform random sampling turns sequential gameplay into i.i.d.-like minibatches.
         indices = np.random.randint(0, self.size, size=batch_size)
         return (
             self.states[indices],
@@ -121,6 +125,7 @@ class PrioritizedReplayBuffer:
             beta: float - importance sampling correction factor
             action_dtype: numpy dtype - dtype for stored actions
         """
+        # Prioritized replay trades unbiased sampling for faster learning from surprising transitions.
         self.capacity = capacity
         self.state_dim = state_dim
         self.alpha = alpha
@@ -145,7 +150,7 @@ class PrioritizedReplayBuffer:
             next_state: numpy array - next state
             done: bool - whether episode ended
         """
-        # New transitions get maximum priority
+        # New transitions start at max priority so agent sees fresh experience at least once.
         max_priority = float(self.priorities[:self.size].max()) if self.size > 0 else 1.0
 
         self.states[self.pos] = np.asarray(state, dtype=np.float32)
@@ -154,6 +159,7 @@ class PrioritizedReplayBuffer:
         self.next_states[self.pos] = np.asarray(next_state, dtype=np.float32)
         self.dones[self.pos] = done
         self.priorities[self.pos] = max_priority
+        # Same circular buffer idea: bounded memory, oldest items replaced first.
         self.pos = (self.pos + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
     
@@ -167,6 +173,7 @@ class PrioritizedReplayBuffer:
         """
         for idx, priority in zip(indices, priorities):
             if idx < self.size:
+                # Higher TD error means "more surprising", so replay will sample it more often.
                 self.priorities[idx] = max(float(priority), 1e-6)
     
     def sample(self, batch_size):
@@ -182,7 +189,7 @@ class PrioritizedReplayBuffer:
         if self.size < batch_size:
             return None
         
-        # Calculate sampling probabilities
+        # Alpha controls how strongly TD-error affects sampling probability.
         priorities = self.priorities[:self.size]
         probabilities = priorities ** self.alpha
         probability_sum = probabilities.sum()
@@ -191,11 +198,11 @@ class PrioritizedReplayBuffer:
         else:
             probabilities = probabilities / probability_sum
         
-        # Sample indices
+        # Non-uniform sampling focuses compute on transitions likely to teach most.
         indices = np.random.choice(self.size, size=batch_size,
                                    p=probabilities, replace=False)
         
-        # Calculate importance sampling weights
+        # Importance weights partially undo bias introduced by prioritized, non-uniform sampling.
         weights = (self.size * probabilities[indices]) ** (-self.beta)
         weights = weights / weights.max()  # Normalize
         weights = weights.astype(np.float32)

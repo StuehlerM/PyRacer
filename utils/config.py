@@ -8,6 +8,7 @@ class Config:
     # =====================
     # Display Settings
     # =====================
+    # These shape window size and frame cadence for humans; agent logic reads state, not screen pixels.
     SCREEN_WIDTH = 1000
     SCREEN_HEIGHT = 800
     FPS = 60
@@ -16,6 +17,7 @@ class Config:
     # =====================
     # Track Settings
     # =====================
+    # Track generation controls task difficulty by changing curve density, width, and checkpoint spacing.
     TRACK_WIDTH = 100  # Width of the track (road width)
     TRACK_MIN_RADIUS = 50  # Minimum turn radius
     TRACK_COMPLEXITY = 8  # Number of control points for generation
@@ -25,6 +27,7 @@ class Config:
     # =====================
     # Car Settings
     # =====================
+    # Car dynamics define what actions feel like; stable physics matters before RL tuning matters.
     CAR_WIDTH = 50
     CAR_HEIGHT = 30
     CAR_MAX_SPEED = 200.0  # Maximum speed (pixels per second)
@@ -38,12 +41,14 @@ class Config:
     # =====================
     # Physics Settings
     # =====================
+    # Fixed timestep keeps motion and reward accumulation consistent across fast and slow machines.
     DT = 1.0 / 60.0  # Time delta (assuming 60 FPS)
     ACCELERATION_CURVE = "s_curve"  # Options: "linear", "s_curve", "log_curve"
     
     # =====================
     # Sensor Settings
     # =====================
+    # Sensors are agent's "eyes": local distance probes instead of full map observations.
     NUM_SENSORS = 7  # Number of raycast sensors
     SENSOR_MAX_DISTANCE = 200  # Maximum sensor range
     SENSOR_ANGLES = np.deg2rad([-90, -60, -30, 0, 30, 60, 90])  # Sensor angles relative to car
@@ -51,17 +56,22 @@ class Config:
     # =====================
     # RL Settings - DQN
     # =====================
+    # Observation = sensor distances plus compact car state, enough to drive without raw image input.
     STATE_DIM = NUM_SENSORS + 4  # Sensors + speed + sin(angle) + cos(angle) + progress
     STATE_VERSION = 2  # Bump when state vector layout changes
+    # Five coarse actions keep control problem simple enough for DQN to learn from sparse rewards.
     ACTION_DIM = 5  # Number of discrete actions
     HIDDEN_DIM = 128
     LEARNING_RATE = 0.001
+    # Gamma near 1.0 values future lap progress almost as much as immediate reward.
     GAMMA = 0.99  # Discount factor
+    # Epsilon starts high for exploration, then decays so policy gradually trusts learned Q-values more.
     EPSILON_START = 1.0  # Initial exploration rate
     EPSILON_MIN = 0.01  # Minimum exploration rate
     EPSILON_DECAY = 0.995  # Exploration decay rate
     MEMORY_SIZE = 10000  # Replay buffer size
     BATCH_SIZE = 64
+    # Warm-up delays learning until replay buffer has varied data instead of first few biased crashes.
     LEARNING_STARTS = 1000  # Environment steps to collect before training
     TARGET_UPDATE_MODE = "polyak"  # Options: "polyak", "hard"
     TARGET_UPDATE_FREQ = 1000  # Train steps between hard target updates
@@ -72,6 +82,7 @@ class Config:
     # =====================
     # Training Settings
     # =====================
+    # These control training budget, checkpoint cadence, and how often progress is surfaced to user.
     NUM_EPISODES = 10000
     MAX_STEPS_PER_EPISODE = 2000
     TRAIN_START_EPISODE = 100  # Deprecated: use LEARNING_STARTS for env-step warm-up
@@ -82,6 +93,7 @@ class Config:
     # =====================
     # Reward Settings
     # =====================
+    # Reward scale makes finishing lap worth much more than risky wall hits or tiny per-step shaping.
     REWARD_LAP_COMPLETE = 200.0
     REWARD_CHECKPOINT = 5.0
     REWARD_COLLISION = -50.0
@@ -91,11 +103,13 @@ class Config:
     # =====================
     # Approach Selection
     # =====================
+    # Default approach picks classic reward-driven DQN unless caller asks for world-model variant.
     DEFAULT_APPROACH = "dqn"  # Options: "dqn", "jepa"
     
     # =====================
     # JEPA Settings (Joint Embedding Predictive Architecture)
     # =====================
+    # JEPA is alternative path: learn compact world model first, then plan actions in latent space.
     # World Model
     JEPA_LATENT_DIM = 64         # Dimension of latent representation z
     JEPA_HIDDEN_DIM = 128        # Hidden layer size for encoder/predictor
@@ -127,6 +141,7 @@ class Config:
     # =====================
     # Action Mapping
     # =====================
+    # Action set favors common racing choices: go straight, turn under throttle, coast, and brake hard.
     ACTIONS = {
         0: {'throttle': 1.0, 'steering': 0.0},      # Accelerate straight
         1: {'throttle': 0.8, 'steering': -0.8},    # Accelerate + turn left

@@ -70,9 +70,7 @@ class Game:
         # For human controls
         self.human_control = not headless
         
-        # Learning mode toggle - enables/disables all learning calculations
-        # When False (human driving mode), skips sensors, rewards, and other expensive RL calculations
-        # For RL training (headless), we need learning_mode = True
+        # Learning mode gates RL-only work; human play does not need sensor/state math every frame.
         self.learning_mode = headless
         
         # For RL
@@ -118,7 +116,7 @@ class Game:
         Returns:
             tuple: (observation, reward, done, info)
         """
-        # Handle human input if no action provided
+        # Same `step()` serves keyboard play and RL, following common (obs, reward, done, info) API.
         if action is None and self.human_control and not self.headless:
             action = self._handle_human_input()
         
@@ -128,7 +126,7 @@ class Game:
         # Map action to throttle and steering
         if action is not None:
             if isinstance(action, int):
-                # Discrete action
+                # Discrete policy outputs action index; config maps it to continuous controls.
                 action_dict = config.ACTIONS.get(action, config.ACTIONS[0])
                 throttle = action_dict['throttle']
                 steering = action_dict['steering']
@@ -147,7 +145,7 @@ class Game:
         # Increment step counter
         self.steps_in_episode += 1
         
-        # CACHE EXPENSIVE CALCULATIONS - calculate once, use everywhere
+        # Cache once per frame because collision/progress are reused by reward, HUD, and next state.
         # Check collision (expensive - iterates through all segments)
         is_colliding, collision_info = self.car.check_collision(self.track)
         
@@ -161,7 +159,7 @@ class Game:
         
         # If in human driving mode (learning_mode=False), skip all learning-related calculations
         if self.learning_mode:
-            # Calculate progress-based reward with wrap-around handling
+            # Reward shaping pays for forward motion so agent learns before full laps become common.
             raw_diff = current_progress - self.prev_progress
             # If we apparently went backwards by > 0.5 of the track, treat it as a wrap.
             if raw_diff < -0.5:
@@ -172,14 +170,14 @@ class Game:
             progress_reward = raw_diff * config.REWARD_PROGRESS
             self.prev_progress = current_progress
             
-            # Calculate total reward for this step
+            # RL reward is sum of small hints, not only sparse win/lose events.
             reward = 0.0
             reward += progress_reward
             
             # Initialize done flag for this step
             done = False
             
-            # Update checkpoint tracking
+            # Checkpoints give medium-term goals so long tracks do not feel reward-empty.
             if new_checkpoint_idx > self.last_checkpoint_idx:
                 self.last_checkpoint_idx = new_checkpoint_idx
                 reward += config.REWARD_CHECKPOINT
@@ -189,7 +187,7 @@ class Game:
                     current_lap_time = self.lap_time
                     self.lap_count += 1
                     
-                    # Bonus for fast laps
+                    # Best-lap bonus nudges policy toward speed, not only safe completion.
                     if current_lap_time < self.best_lap_time:
                         self.best_lap_time = current_lap_time
                         new_best = True
@@ -207,20 +205,19 @@ class Game:
                     
                     reward += lap_reward
             
-            # Collision penalty
+            # Crashes end episode so replay buffer clearly labels bad trajectories as terminal.
             if is_colliding:
                 reward += config.REWARD_COLLISION
                 done = True
             
-            # Time penalty (encourage speed)
+            # Small living cost discourages idling and forces agent to trade safety vs pace.
             reward += config.REWARD_TIME_PENALTY
             
             # Update total rewards
             self.episode_reward += reward
             self.total_reward += reward
         else:
-            # Human driving mode - skip all learning calculations
-            # Still need to track basic game state (laps, checkpoints, etc.)
+            # Human mode keeps game rules but skips RL bookkeeping to save sensor/calc cost.
             
             # Initialize done flag for this step
             done = False
@@ -261,15 +258,14 @@ class Game:
             # but we don't apply penalties
             pass
         
-        # Get next state - pass cached values to avoid recalculation
-        # For RL mode, we need sensor readings. For human mode, we can skip them entirely.
+        # Observation is next state after action, matching standard RL environment contract.
         state = self._get_state(
             sensor_readings=None,  # Will be computed only if needed
             progress=current_progress,  # Use cached progress
             skip_sensors=not self.learning_mode  # Skip expensive sensor computation in human mode
         )
         
-        # Prepare info dict
+        # `info` carries diagnostics for training logs without polluting learning signal.
         info = {
             'lap_count': self.lap_count,
             'lap_time': self._completed_lap_time if is_finish else self.lap_time,
@@ -305,12 +301,12 @@ class Game:
         # Get sensor readings if not provided
         if sensor_readings is None:
             if skip_sensors:
-                # Use zeros for sensor readings (for human mode where sensors aren't needed)
+                # Zero-fill keeps state shape stable even when no agent is consuming sensors.
                 sensor_readings = [0.0] * config.NUM_SENSORS
             else:
                 sensor_readings = self.car.get_sensor_readings(self.track)
         
-        # Get car state
+        # State mixes perception, motion, heading, and track progress into fixed-size RL observation.
         car_speed = self.car.speed / self.car.max_speed  # Normalize speed
         car_angle = self.car.angle
         
@@ -318,7 +314,7 @@ class Game:
         if progress is None:
             progress = self.track.get_progress(tuple(self.car.position))
         
-        # Combine into state vector
+        # sin/cos avoid angle wrap jump at ±pi, which is easier for neural net than raw radians.
         state = np.concatenate([
             sensor_readings,
             [car_speed, np.sin(car_angle), np.cos(car_angle), progress]
@@ -339,7 +335,7 @@ class Game:
         
         keys = pygame.key.get_pressed()
         
-        # Accelerate - ONLY arrow up
+        # Arrow-only driving frees letter keys for debug toggles without conflicting with steering.
         if keys[pygame.K_UP]:
             throttle = 1.0
         

@@ -18,21 +18,22 @@ def line_segment_intersection(p1, p2, p3, p4):
     p3 = np.array(p3, dtype=float)
     p4 = np.array(p4, dtype=float)
     
-    # Calculate denominator
+    # Parametric intersection solves p1 + ua*(p2-p1) = p3 + ub*(p4-p3).
+    # Shared denominator becomes zero when segment directions are parallel.
     denom = (p4[1] - p3[1]) * (p2[0] - p1[0]) - (p4[0] - p3[0]) * (p2[1] - p1[1])
     
     # If lines are parallel
     if abs(denom) < 1e-10:
         return None, False
     
-    # Calculate ua and ub
+    # ua/ub tell how far along each segment intersection lies: 0=start, 1=end.
     ua_numerator = (p4[0] - p3[0]) * (p1[1] - p3[1]) - (p4[1] - p3[1]) * (p1[0] - p3[0])
     ub_numerator = (p2[0] - p1[0]) * (p1[1] - p3[1]) - (p2[1] - p1[1]) * (p1[0] - p3[0])
     
     ua = ua_numerator / denom
     ub = ub_numerator / denom
     
-    # Check if intersection is within both segments
+    # Both parameters must stay in [0, 1], otherwise infinite lines cross outside segment bounds.
     if 0 <= ua <= 1 and 0 <= ub <= 1:
         # Calculate intersection point
         intersection = p1 + ua * (p2 - p1)
@@ -56,7 +57,7 @@ def point_in_polygon(point, polygon):
     n = len(polygon)
     inside = False
     
-    # Ray casting algorithm
+    # Shoot horizontal ray and count edge crossings; odd count means point is inside.
     for i in range(n):
         x1, y1 = polygon[i]
         x2, y2 = polygon[(i + 1) % n]
@@ -66,7 +67,7 @@ def point_in_polygon(point, polygon):
            (y1 == y2 and y == y1 and min(x1, x2) <= x <= max(x1, x2)):
             return True
         
-        # Check if ray intersects with edge
+        # Each crossing flips inside/outside parity, which is why we toggle boolean.
         if y > min(y1, y2) and y <= max(y1, y2):
             if x <= max(x1, x2):
                 if y1 != y2:
@@ -98,10 +99,10 @@ def point_to_line_distance(point, line_start, line_end):
     # Vector from a to p
     ap = p - a
     
-    # Projection of ap onto ab
+    # Projection scalar says where closest point falls on infinite line through segment.
     t = np.dot(ap, ab) / np.dot(ab, ab)
     
-    # Clamp t to [0, 1]
+    # Clamp keeps closest point on finite segment instead of extending past endpoints.
     t = max(0, min(1, t))
     
     # Closest point on the line segment
@@ -147,6 +148,7 @@ def ray_cast(start, direction, max_distance, track_segments, segment_indices=Non
         seg_starts = seg_starts[segment_indices]
         seg_ends = seg_ends[segment_indices]
 
+    # Batch version lets NumPy test all candidate segments at once instead of Python looping.
     return ray_cast_batch(start, direction, max_distance, seg_starts, seg_ends)
 
 
@@ -189,6 +191,7 @@ def ray_cast_batch(start, direction, max_distance, seg_starts, seg_ends):
 
     d1 = p2 - p1
     d2 = p4 - p3
+    # Same ua/ub math as single-segment case, but broadcast across every boundary segment.
     denom = d2[:, 1] * d1[0] - d2[:, 0] * d1[1]
 
     valid = np.abs(denom) >= 1e-10
@@ -204,10 +207,12 @@ def ray_cast_batch(start, direction, max_distance, seg_starts, seg_ends):
     ua[valid] = ua_num[valid] / denom[valid]
     ub[valid] = ub_num[valid] / denom[valid]
 
+    # Vectorized mask keeps only intersections lying on both finite segments.
     hits = valid & (ua >= 0.0) & (ua <= 1.0) & (ub >= 0.0) & (ub <= 1.0)
     if not np.any(hits):
         return max_distance
 
+    # Smallest ua is first wall hit along ray, which is sensor distance we care about.
     return float(np.min(ua[hits]) * max_distance)
 
 
@@ -234,7 +239,7 @@ def circle_polygon_collision(center, radius, polygon):
         if distance < radius:
             return True
     
-    # Also check if circle center is inside polygon
+    # Center-inside case catches full penetration where no edge lies within radius anymore.
     if point_in_polygon(center, polygon):
         return True
     
@@ -268,7 +273,7 @@ def get_circle_polygon_collision_point(center, radius, polygon):
         if distance < radius and distance < closest_distance:
             closest_distance = distance
             
-            # Find closest point on segment
+            # Reuse projection idea to find exact contact point on edge.
             center_arr = np.array(center, dtype=float)
             ab = p2 - p1
             ap = center_arr - p1
@@ -276,7 +281,7 @@ def get_circle_polygon_collision_point(center, radius, polygon):
             t = max(0, min(1, t))
             collision_point = p1 + t * ab
             
-            # Calculate normal (from polygon edge to circle center)
+            # Collision normal points outward from wall so later response can push car away.
             edge_dir = ab / np.linalg.norm(ab)
             to_center = center_arr - collision_point
             to_center = to_center / np.linalg.norm(to_center)
@@ -316,11 +321,10 @@ def s_curve_acceleration(current_speed, max_speed, acceleration_rate, throttle, 
     if max_speed <= 0:
         return 0
     
-    # Calculate speed ratio (0-1)
+    # Normalize speed so same curve shape works for any chosen top speed.
     speed_ratio = abs(current_speed) / max_speed
     
-    # S-curve function: starts at 1 when speed_ratio=0, approaches 0 as speed_ratio->1
-    # This creates the "fast start, slow finish" effect
+    # Squaring (1 - ratio) keeps launch punchy, then tapers harder near top speed.
     acceleration_factor = (1 - speed_ratio) ** 2  # Quadratic falloff for S-curve effect
     
     return throttle * acceleration_rate * acceleration_factor * dt
@@ -343,17 +347,15 @@ def log_curve_acceleration(current_speed, max_speed, acceleration_rate, throttle
     if max_speed <= 0:
         return 0
     
-    # Calculate speed ratio (0-1)
+    # Normalize speed before applying nonlinear throttle response.
     speed_ratio = abs(current_speed) / max_speed
     
-    # Log curve: faster at low speeds, slower at high speeds
-    # We want: factor = 1 at speed_ratio=0, factor approaches 0 at speed_ratio=1
-    # Using: factor = 1 - (log10(1 + 9*speed_ratio) / log10(10))
-    # This gives a smooth curve from 1 to 0 as speed goes from 0 to max
+    # Log curve compresses high-speed region, so each extra bit of speed gets harder to earn.
+    # `1 + 9*ratio` maps [0,1] to [1,10], giving clean log10 range from 0 to 1.
     if speed_ratio >= 1:
         acceleration_factor = 0
     else:
-        # This creates a smooth logarithmic falloff
+        # Subtract from 1 so throttle starts strong and fades as ratio approaches 1.
         acceleration_factor = 1 - (np.log10(1 + 9 * speed_ratio) / 1.0)
         acceleration_factor = max(0, min(1, acceleration_factor))
     
