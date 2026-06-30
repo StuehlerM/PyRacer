@@ -18,7 +18,7 @@ class Track:
     
     def __init__(self, width=config.SCREEN_WIDTH, height=config.SCREEN_HEIGHT, 
                  track_width=config.TRACK_WIDTH, complexity=config.TRACK_COMPLEXITY,
-                 spline_points=30):
+                 spline_points=30, seed=None):
         """
         Initialize a new track.
         
@@ -28,12 +28,15 @@ class Track:
             track_width: int - width of the track (road)
             complexity: int - number of control points for generation
             spline_points: int - number of intermediate points between control points
+            seed: int - optional seed for reproducible track generation
         """
         self.screen_width = width
         self.screen_height = height
         self.track_width = track_width
         self.complexity = complexity
         self.spline_points = spline_points
+        self.seed = seed
+        self._rng = np.random.default_rng(seed) if seed is not None else None
         
         # Generate track
         self.waypoints = []  # Center line waypoints
@@ -43,7 +46,9 @@ class Track:
         self.checkpoints = []  # Checkpoint positions
         self.start_position = (0, 0)  # Will be set after generation
         self.start_angle = 0  # Starting direction in radians
+        self.start_idx = 0  # Waypoint index used for start/finish
         self.finish_line = None  # (start_point, end_point)
+        self._last_progress_idx = None
         
         self._generate_track()
         self._create_boundaries()
@@ -81,7 +86,7 @@ class Track:
             
             # Random offset from circle for variety
             # This creates the "wobbly" circular track
-            offset = np.random.uniform(-radius * 0.3, radius * 0.3)
+            offset = self._uniform(-radius * 0.3, radius * 0.3)
             
             x = center_x + (radius + offset) * np.cos(angle)
             y = center_y + (radius + offset) * np.sin(angle)
@@ -104,6 +109,8 @@ class Track:
         
         # Cache boundary segments array for faster access
         self._boundary_segments_array = None
+        self._segment_starts = None
+        self._segment_ends = None
         
         # Set start position and angle
         # Start at the bottom of the screen (approximately)
@@ -114,6 +121,7 @@ class Track:
                 break
         
         # Start position is slightly offset from waypoint
+        self.start_idx = start_idx
         start_point = self.waypoints[start_idx]
         next_point = self.waypoints[(start_idx + 1) % len(self.waypoints)]
         
@@ -276,7 +284,9 @@ class Track:
             self.segments.append((outer_p1, outer_p2))
         
         # Cache segments as numpy array for faster access
-        self._boundary_segments_array = np.array(self.segments)
+        self._boundary_segments_array = np.asarray(self.segments, dtype=float)
+        self._segment_starts = self._boundary_segments_array[:, 0, :]
+        self._segment_ends = self._boundary_segments_array[:, 1, :]
         
         # Pre-calculate bounding box for quick rejection
         self._update_bounding_box()
@@ -288,9 +298,9 @@ class Track:
         n = len(self.waypoints)
         num_checkpoints = config.NUM_CHECKPOINTS
         
-        # Place checkpoints at regular intervals
+        # Place checkpoints after the start line, evenly around the lap.
         for i in range(num_checkpoints):
-            idx = int(i * n / num_checkpoints)
+            idx = (self.start_idx + int((i + 1) * n / (num_checkpoints + 1))) % n
             checkpoint_pos = self.waypoints[idx]
             self.checkpoints.append({
                 'position': checkpoint_pos,
@@ -418,6 +428,22 @@ class Track:
             list: all boundary segments as ((x1, y1), (x2, y2)) tuples
         """
         return self.segments
+
+    def get_boundary_arrays(self):
+        """
+        Get cached boundary segment arrays for vectorized ray casting.
+
+        Returns:
+            tuple: (segment_starts, segment_ends), each shaped (N, 2)
+        """
+        if self._segment_starts is None or self._segment_ends is None:
+            self._boundary_segments_array = np.asarray(self.segments, dtype=float)
+            if self._boundary_segments_array.size == 0:
+                empty = np.empty((0, 2), dtype=float)
+                return empty, empty
+            self._segment_starts = self._boundary_segments_array[:, 0, :]
+            self._segment_ends = self._boundary_segments_array[:, 1, :]
+        return self._segment_starts, self._segment_ends
     
     def get_nearby_segments(self, point, radius=None):
         """
@@ -503,15 +529,17 @@ class Track:
         
         return False, None
     
-    def get_progress(self, position):
+    def get_progress(self, position, last_idx_hint=None, return_idx=False):
         """
         Calculate the progress along the track (0-1).
         
         Args:
             position: tuple (x, y) - current position
+            last_idx_hint: int - optional previous closest segment index
+            return_idx: bool - return (progress, closest_idx) if True
         
         Returns:
-            float: progress from 0 to 1
+            float: progress from 0 to 1, or tuple if return_idx is True
         """
         # Use cached data for performance
         if (self._cached_waypoints_array is None or 
@@ -525,30 +553,22 @@ class Track:
         segment_lengths = self._cached_segment_lengths
         total_length = self._cached_total_length
         
-        # Find the closest segment on the center line
-        closest_distance = float('inf')
-        closest_segment_idx = 0
-        closest_point_on_segment = None
-        
-        for i in range(n):
-            p1 = waypoints_array[i]
-            p2 = waypoints_array[(i + 1) % n]
-            
-            from .physics import point_to_line_distance
-            distance = point_to_line_distance(position, tuple(p1), tuple(p2))
-            
-            if distance < closest_distance:
-                closest_distance = distance
-                closest_segment_idx = i
-                
-                # Find the point on the segment closest to position
-                edge = p2 - p1
-                edge_length = np.linalg.norm(edge)
-                if edge_length > 0:
-                    ap = position - p1
-                    t = np.dot(ap, edge) / np.dot(edge, edge)
-                    t = max(0, min(1, t))
-                    closest_point_on_segment = p1 + t * edge
+        hint = self._last_progress_idx if last_idx_hint is None else last_idx_hint
+        if hint is None:
+            search_indices = np.arange(n)
+        else:
+            search_indices = (int(hint) + np.arange(-5, 6)) % n
+
+        closest_segment_idx, closest_point_on_segment, closest_distance = (
+            self._closest_progress_segment(position, search_indices)
+        )
+
+        if hint is not None and closest_distance > self.track_width:
+            closest_segment_idx, closest_point_on_segment, _ = (
+                self._closest_progress_segment(position, np.arange(n))
+            )
+
+        self._last_progress_idx = closest_segment_idx
         
         # Calculate distance from start along the track using cached segment lengths
         distance_from_start = 0.0
@@ -560,13 +580,39 @@ class Track:
         p1 = waypoints_array[closest_segment_idx]
         if closest_point_on_segment is not None:
             distance_from_start += float(np.linalg.norm(closest_point_on_segment - p1))
-        
+
         # Return progress (0-1)
         if total_length > 0:
+            start_distance = float(np.sum(segment_lengths[:self.start_idx])) if self.start_idx > 0 else 0.0
+            distance_from_start = (distance_from_start - start_distance) % total_length
             progress = distance_from_start / total_length
-            return float(progress)
+            progress = float(progress)
+            return (progress, closest_segment_idx) if return_idx else progress
         
-        return 0.0
+        return (0.0, closest_segment_idx) if return_idx else 0.0
+
+    def _closest_progress_segment(self, position, indices):
+        """Find closest center-line segment among candidate indices."""
+        n = self._cached_waypoints_count
+        waypoints = self._cached_waypoints_array
+        indices = np.asarray(indices, dtype=np.int64)
+        p1 = waypoints[indices]
+        p2 = waypoints[(indices + 1) % n]
+        edges = p2 - p1
+        ap = position - p1
+        denom = np.einsum('ij,ij->i', edges, edges)
+        t = np.zeros(len(indices), dtype=float)
+        valid = denom > 1e-12
+        t[valid] = np.einsum('ij,ij->i', ap[valid], edges[valid]) / denom[valid]
+        t = np.clip(t, 0.0, 1.0)
+        closest_points = p1 + edges * t[:, None]
+        distances = np.linalg.norm(closest_points - position, axis=1)
+        best = int(np.argmin(distances))
+        return int(indices[best]), closest_points[best], float(distances[best])
+
+    def reset_progress_hint(self):
+        """Reset cached closest segment hint used by get_progress."""
+        self._last_progress_idx = None
     
     def check_checkpoint(self, position, last_checkpoint_idx):
         """
@@ -579,19 +625,17 @@ class Track:
         Returns:
             tuple: (new_checkpoint_idx, is_finish_line)
         """
-        for i, checkpoint in enumerate(self.checkpoints):
+        next_checkpoint_idx = last_checkpoint_idx + 1
+        for checkpoint in self.checkpoints:
             checkpoint_idx = checkpoint['index']
-            
-            # Only check checkpoints after the last one reached
-            if checkpoint_idx <= last_checkpoint_idx:
+            if checkpoint_idx != next_checkpoint_idx:
                 continue
-            
-            # Calculate distance from position to checkpoint
+
+            # Calculate distance from position to the next expected checkpoint
             cx, cy = checkpoint['position']
             px, py = position
             distance = np.sqrt((px - cx)**2 + (py - cy)**2)
-            
-            # If close enough to checkpoint
+
             if distance < self.track_width * 0.8:  # Wide threshold for checkpoint
                 is_finish = checkpoint.get('is_finish', False)
                 return checkpoint_idx, is_finish
@@ -688,12 +732,12 @@ class Track:
             tuple: (x, y, angle) - position and starting angle
         """
         # Pick a random waypoint
-        idx = np.random.randint(0, len(self.waypoints))
+        idx = self._integers(0, len(self.waypoints))
         p1 = self.waypoints[idx]
         p2 = self.waypoints[(idx + 1) % len(self.waypoints)]
         
         # Random offset along the segment
-        offset = np.random.uniform(0, 1)
+        offset = self._uniform(0, 1)
         
         position = self._get_center_point(p1, p2, offset)
         
@@ -703,3 +747,13 @@ class Track:
         angle = np.arctan2(dy, dx)
         
         return position, angle
+
+    def _uniform(self, low, high):
+        if self._rng is not None:
+            return self._rng.uniform(low, high)
+        return np.random.uniform(low, high)
+
+    def _integers(self, low, high):
+        if self._rng is not None:
+            return int(self._rng.integers(low, high))
+        return int(np.random.randint(low, high))

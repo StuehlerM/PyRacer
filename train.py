@@ -14,6 +14,7 @@ Usage:
 
 import argparse
 import os
+import random
 import time
 import json
 import csv
@@ -53,18 +54,54 @@ def parse_args():
                         help='Minimum exploration rate')
     parser.add_argument('--epsilon-decay', type=float, default=config.EPSILON_DECAY,
                         help='Exploration decay rate')
+    parser.add_argument('--learning-starts', type=int, default=config.LEARNING_STARTS,
+                        help='Environment steps to collect before training updates')
+    parser.add_argument('--target-update-mode', choices=['polyak', 'hard'],
+                        default=config.TARGET_UPDATE_MODE,
+                        help='Target network update mode')
+    parser.add_argument('--target-update-freq', type=int, default=config.TARGET_UPDATE_FREQ,
+                        help='Train steps between hard target updates')
+    parser.add_argument('--polyak-tau', type=float, default=config.POLYAK_TAU,
+                        help='Soft target update rate for polyak mode')
+    parser.add_argument('--prioritized', action='store_true',
+                        help='Use prioritized experience replay')
     parser.add_argument('--multi-track', action='store_true',
                         help='Train on multiple tracks')
     parser.add_argument('--num-tracks', type=int, default=3,
                         help='Number of tracks for multi-track training')
+    parser.add_argument('--render-every-n', type=int, default=1,
+                        help='Render every Nth step when rendering')
     parser.add_argument('--dueling', action='store_true',
                         help='Use Dueling DQN')
+    parser.add_argument('--seed', type=int, default=config.DEFAULT_SEED,
+                        help='Random seed for reproducible runs')
+    parser.add_argument('--deterministic', action='store_true',
+                        help='Use deterministic torch algorithms where available')
+    parser.add_argument('--best-window', type=int, default=50,
+                        help='Moving reward window for best-model selection')
+    parser.add_argument('--save-freq', type=int, default=config.SAVE_FREQ,
+                        help='Save model every N episodes')
+    parser.add_argument('--log-freq', type=int, default=config.LOG_FREQ,
+                        help='Log training every N episodes')
     parser.add_argument('--test', action='store_true',
                         help='Test mode (run trained agent)')
     parser.add_argument('--test-episodes', type=int, default=10,
                         help='Number of test episodes')
     
     return parser.parse_args()
+
+
+def set_seed(seed, deterministic=False):
+    """Seed Python, NumPy, and torch random sources."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 class TrainingLogger:
@@ -124,8 +161,13 @@ class TrainingLogger:
                 'TRACK_COMPLEXITY': config.TRACK_COMPLEXITY,
                 'CAR_MAX_SPEED': config.CAR_MAX_SPEED,
                 'STATE_DIM': config.STATE_DIM,
+                'STATE_VERSION': config.STATE_VERSION,
                 'ACTION_DIM': config.ACTION_DIM,
-                'NUM_SENSORS': config.NUM_SENSORS
+                'NUM_SENSORS': config.NUM_SENSORS,
+                'LEARNING_STARTS': config.LEARNING_STARTS,
+                'TARGET_UPDATE_MODE': config.TARGET_UPDATE_MODE,
+                'TARGET_UPDATE_FREQ': config.TARGET_UPDATE_FREQ,
+                'POLYAK_TAU': config.POLYAK_TAU,
             }
         }
         
@@ -177,6 +219,7 @@ def train_agent(args):
     print(f"Render: {args.render}")
     print(f"Multi-track: {args.multi_track}")
     print(f"Dueling DQN: {args.dueling}")
+    print(f"Prioritized replay: {args.prioritized}")
     print()
     
     # Initialize logger
@@ -185,9 +228,15 @@ def train_agent(args):
     
     # Create environment
     if args.multi_track:
-        env = MultiTrackEnv(num_tracks=args.num_tracks, render=args.render)
+        env = MultiTrackEnv(
+            num_tracks=args.num_tracks,
+            render=args.render,
+            render_every_n=args.render_every_n,
+            seed=args.seed,
+        )
     else:
-        env = RacingEnv(render=args.render)
+        track = Track(seed=args.seed) if args.seed is not None else None
+        env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
     
     # Create agent
     agent = DQNAgent(
@@ -199,8 +248,13 @@ def train_agent(args):
         epsilon_min=args.epsilon_min,
         epsilon_decay=args.epsilon_decay,
         batch_size=args.batch_size,
+        learning_starts=args.learning_starts,
+        target_update_mode=args.target_update_mode,
+        target_update_freq=args.target_update_freq,
+        polyak_tau=args.polyak_tau,
         use_dueling=args.dueling,
-        use_double_dqn=True
+        use_double_dqn=True,
+        use_prioritized=args.prioritized,
     )
     
     # Load model if specified
@@ -212,7 +266,9 @@ def train_agent(args):
     # Training loop
     start_time = time.time()
     best_lap_time = float('inf')
+    best_eval_score = -float('inf')
     running_rewards = []
+    best_window = max(1, args.best_window)
     
     try:
         for episode in range(1, args.episodes + 1):
@@ -240,8 +296,9 @@ def train_agent(args):
                 
                 # Update agent
                 loss = agent.update()
-                if loss is not None and loss > 0:
+                if loss is not None:
                     episode_loss += loss
+                agent.on_env_step()
                 
                 # Update state
                 state = next_state
@@ -253,25 +310,24 @@ def train_agent(args):
                     lap_completed = True
                     current_lap_time = info.get('lap_time', 0)
                     
-                    # Update best lap time
                     if current_lap_time < best_lap_time:
                         best_lap_time = current_lap_time
-                        logger.save_model(agent, is_best=True)
-                
+                 
                 # Render
                 if args.render:
                     env.render()
-                    # Small delay for visualization
-                    time.sleep(0.01)
             
             # Update agent statistics
             agent.increment_episode()
             
             # Calculate running average
             running_rewards.append(episode_reward)
-            if len(running_rewards) > 100:
+            if len(running_rewards) > best_window:
                 running_rewards.pop(0)
             avg_reward = np.mean(running_rewards) if running_rewards else 0
+            if avg_reward > best_eval_score:
+                best_eval_score = avg_reward
+                logger.save_model(agent, is_best=True)
             
             # Get agent stats
             agent_stats = agent.get_stats()
@@ -285,7 +341,7 @@ def train_agent(args):
                 best_lap_time=best_lap_time,
                 epsilon=agent.epsilon,
                 loss=episode_loss / max(1, episode_steps),
-                steps=agent.steps,
+                steps=agent_stats['env_steps'],
                 memory_size=len(agent.memory)
             )
             
@@ -299,7 +355,7 @@ def train_agent(args):
                     best_lap_time=best_lap_time,
                     epsilon=agent.epsilon,
                     loss=episode_loss / max(1, episode_steps),
-                    steps=agent.steps
+                    steps=agent_stats['env_steps']
                 )
             
             # Save model periodically
@@ -338,7 +394,8 @@ def test_agent(args):
     print(f"Render: {args.render}")
     
     # Create environment
-    env = RacingEnv(render=args.render)
+    track = Track(seed=args.seed) if args.seed is not None else None
+    env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
     
     # Create and load agent
     agent = DQNAgent(
@@ -390,7 +447,6 @@ def test_agent(args):
             # Render
             if args.render:
                 env.render()
-                time.sleep(0.01)
         
         total_rewards.append(episode_reward)
         
@@ -416,10 +472,9 @@ def test_agent(args):
 def main():
     """Main entry point."""
     args = parse_args()
-    
-    # Set some defaults for logging and saving
-    args.log_freq = 10  # Log every 10 episodes
-    args.save_freq = 50  # Save model every 50 episodes
+
+    if args.seed is not None:
+        set_seed(args.seed, deterministic=args.deterministic)
     
     if args.test:
         test_agent(args)

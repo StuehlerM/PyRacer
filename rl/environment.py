@@ -13,10 +13,11 @@ class RacingEnv:
     Reinforcement learning environment for the racing game.
     
     Provides a standard interface similar to OpenAI Gym for RL training.
-    Handles state normalization and reward calculation.
+    Returns the normalized state produced by Game and tracks episode statistics.
     """
     
-    def __init__(self, track=None, render=False, max_steps=config.MAX_STEPS_PER_EPISODE):
+    def __init__(self, track=None, render=False, max_steps=config.MAX_STEPS_PER_EPISODE,
+                 render_every_n=1):
         """
         Initialize the racing environment.
         
@@ -24,16 +25,14 @@ class RacingEnv:
             track: Track - custom track (None for random generation)
             render: bool - whether to render the environment
             max_steps: int - maximum steps per episode
+            render_every_n: int - render every Nth explicit render call
         """
-        self.game = Game(track=track, headless=not render)
+        self.game = Game(track=track, headless=not render, render_every_step=False)
         self._render = render
+        self.render_every_n = max(1, int(render_every_n))
+        self._render_call_count = 0
         self.max_steps = max_steps
         self.episode = 0
-        
-        # State normalization statistics (for online normalization)
-        self.state_means = np.zeros(config.STATE_DIM)
-        self.state_stds = np.ones(config.STATE_DIM)
-        self.state_counts = np.zeros(config.STATE_DIM)
         
         # Episode statistics
         self.episode_rewards = []
@@ -50,8 +49,7 @@ class RacingEnv:
         """
         state = self.game.reset()
         self.episode += 1
-        
-        return self._normalize_state(state)
+        return state
     
     def step(self, action):
         """
@@ -76,12 +74,6 @@ class RacingEnv:
         game_action = (throttle, steering)
         next_state, reward, done, info = self.game.step(game_action)
         
-        # Normalize state
-        next_state = self._normalize_state(next_state)
-        
-        # Update statistics
-        self._update_stats(next_state)
-        
         # Track episode rewards
         info['episode'] = self.episode
         
@@ -93,35 +85,6 @@ class RacingEnv:
                 self.best_lap_time = lap_time
         
         return next_state, reward, done, info
-    
-    def _normalize_state(self, state):
-        """
-        Normalize the state vector.
-        
-        Args:
-            state: numpy array - state vector
-        
-        Returns:
-            numpy array: normalized state vector
-        """
-        # For now, we don't do online normalization
-        # States are already mostly normalized in the game
-        # (sensor readings are 0-1, speed is normalized, etc.)
-        return state
-    
-    def _update_stats(self, state):
-        """
-        Update state statistics for normalization.
-        
-        Args:
-            state: numpy array - state vector
-        """
-        # Update running statistics
-        self.state_counts += 1
-        self.state_means += (state - self.state_means) / self.state_counts
-        
-        # For std, use Welford's algorithm
-        # But for simplicity, we'll skip it for now
     
     def close(self):
         """Close the environment and clean up resources."""
@@ -151,7 +114,9 @@ class RacingEnv:
             mode: str - render mode ('human', 'rgb_array', etc.)
         """
         if self._render:
-            self.game.render()
+            self._render_call_count += 1
+            if self._render_call_count % self.render_every_n == 0:
+                self.game.render()
     
     def set_track(self, track):
         """
@@ -161,6 +126,8 @@ class RacingEnv:
             track: Track - new track
         """
         self.game.track = track
+        if hasattr(track, 'reset_progress_hint'):
+            track.reset_progress_hint()
         # Reset car to new track start
         start_pos = track.start_position
         start_angle = track.start_angle
@@ -175,7 +142,7 @@ class MultiTrackEnv:
     """
     
     def __init__(self, num_tracks=5, render=False, max_steps=config.MAX_STEPS_PER_EPISODE, 
-                 rotation_every=10, eval_mode=False):
+                 rotation_every=10, eval_mode=False, render_every_n=1, seed=None):
         """
         Initialize the multi-track environment.
         
@@ -185,19 +152,28 @@ class MultiTrackEnv:
             max_steps: int - maximum steps per episode
             rotation_every: int - rotate track every N episodes (default: 10)
             eval_mode: bool - if True, rotate track every reset (for testing)
+            render_every_n: int - render every Nth explicit render call
+            seed: int - optional base seed for reproducible track generation
         """
         self.num_tracks = num_tracks
         self.tracks = []
         self.rotation_every = 1 if eval_mode else rotation_every
         self.eval_mode = eval_mode
+        self.seed = seed
         
         # Generate multiple tracks
         for i in range(num_tracks):
-            track = Track(complexity=config.TRACK_COMPLEXITY + i * 2)
+            track_seed = None if seed is None else seed + i
+            track = Track(complexity=config.TRACK_COMPLEXITY + i * 2, seed=track_seed)
             self.tracks.append(track)
         
         # Create environment with first track
-        self.env = RacingEnv(self.tracks[0], render=render, max_steps=max_steps)
+        self.env = RacingEnv(
+            self.tracks[0],
+            render=render,
+            max_steps=max_steps,
+            render_every_n=render_every_n,
+        )
         self.current_track_idx = 0
     
     def reset(self):

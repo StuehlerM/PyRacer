@@ -103,8 +103,8 @@ class DQN(nn.Module):
             return random.randint(0, self.output_dim - 1)
         else:
             # Greedy action (exploitation)
-            with torch.no_grad():
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            with torch.inference_mode():
+                state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.forward(state_tensor)
                 return q_values.argmax().item()
 
@@ -218,8 +218,8 @@ class DuelingDQN(nn.Module):
         if random.random() < epsilon:
             return random.randint(0, self.output_dim - 1)
         else:
-            with torch.no_grad():
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            with torch.inference_mode():
+                state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.forward(state_tensor)
                 return q_values.argmax().item()
 
@@ -318,9 +318,9 @@ class ConvDQN(nn.Module):
         if random.random() < epsilon:
             return random.randint(0, self.output_dim - 1)
         else:
-            with torch.no_grad():
+            with torch.inference_mode():
                 # Convert numpy array to tensor and add batch dimension
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+                state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
                 q_values = self.forward(state_tensor)
                 return q_values.argmax().item()
 

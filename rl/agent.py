@@ -10,7 +10,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
 from .model import DQN, DuelingDQN
-from .memory import ReplayBuffer
+from .memory import PrioritizedReplayBuffer, ReplayBuffer
 from utils.config import config
 
 
@@ -44,8 +44,13 @@ class DQNAgent:
         target_update_freq: int = config.TARGET_UPDATE_FREQ,
         use_dueling: bool = False,
         use_double_dqn: bool = True,
-        polyak_tau: float = 0.005,
+        learning_starts: int = config.LEARNING_STARTS,
+        target_update_mode: str = config.TARGET_UPDATE_MODE,
+        polyak_tau: float = config.POLYAK_TAU,
         grad_clip_norm: float = 1.0,
+        use_prioritized: bool = False,
+        prioritized_alpha: float = config.PRIORITIZED_REPLAY_ALPHA,
+        prioritized_beta: float = config.PRIORITIZED_REPLAY_BETA,
     ):
         """
         Initialize the DQN agent.
@@ -63,8 +68,13 @@ class DQNAgent:
             target_update_freq: int - steps between target network updates
             use_dueling: bool - use Dueling DQN architecture
             use_double_dqn: bool - use Double DQN for target calculation
+            learning_starts: int - env steps to collect before training starts
+            target_update_mode: str - "polyak" or "hard"
             polyak_tau: float - interpolation factor for Polyak averaging (0 = hard update)
             grad_clip_norm: float - maximum norm for gradient clipping
+            use_prioritized: bool - use prioritized experience replay
+            prioritized_alpha: float - priority exponent for prioritized replay
+            prioritized_beta: float - importance-sampling correction exponent
             
         Raises:
             AssertionError: If any parameter is invalid
@@ -78,8 +88,12 @@ class DQNAgent:
         assert memory_size > 0, "memory_size must be positive"
         assert batch_size > 0, "batch_size must be positive"
         assert target_update_freq > 0, "target_update_freq must be positive"
+        assert learning_starts >= 0, "learning_starts must be non-negative"
+        assert target_update_mode in {"polyak", "hard"}, "target_update_mode must be 'polyak' or 'hard'"
         assert 0 <= polyak_tau <= 1, "polyak_tau must be in [0, 1]"
         assert grad_clip_norm > 0, "grad_clip_norm must be positive"
+        assert prioritized_alpha >= 0, "prioritized_alpha must be non-negative"
+        assert prioritized_beta >= 0, "prioritized_beta must be non-negative"
         
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -89,11 +103,14 @@ class DQNAgent:
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
+        self.learning_starts = learning_starts
         self.target_update_freq = target_update_freq
+        self.target_update_mode = target_update_mode
         self.use_dueling = use_dueling
         self.use_double_dqn = use_double_dqn
         self.polyak_tau = polyak_tau
         self.grad_clip_norm = grad_clip_norm
+        self.use_prioritized = use_prioritized
         
         # Set up device (CPU or GPU)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,14 +135,26 @@ class DQNAgent:
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         
         # Initialize replay buffer
-        self.memory = ReplayBuffer(memory_size)
+        if use_prioritized:
+            self.memory = PrioritizedReplayBuffer(
+                memory_size,
+                state_dim=state_dim,
+                alpha=prioritized_alpha,
+                beta=prioritized_beta,
+            )
+        else:
+            self.memory = ReplayBuffer(memory_size, state_dim=state_dim)
         
         # Training state
-        self.steps = 0
+        self.env_steps = 0
+        self.train_steps = 0
+        self.steps = 0  # Backward-compatible alias for env_steps in logs/checkpoints
         self.episodes = 0
         self.total_loss = 0.0
         self.losses = []
         self.best_lap_time = float('inf')
+        self.state_version = config.STATE_VERSION
+        self._inference_buf = torch.zeros((1, state_dim), device=self.device, dtype=torch.float32)
     
     def _greedy_action(self, state: np.ndarray) -> int:
         """Select the action with the highest Q-value (no exploration).
@@ -136,9 +165,14 @@ class DQNAgent:
         Returns:
             int: action with highest Q-value
         """
-        with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_net(state_tensor)
+        state_array = np.ascontiguousarray(np.asarray(state, dtype=np.float32).reshape(-1))
+        if state_array.shape[0] != self.state_dim:
+            raise ValueError(f"Expected state_dim={self.state_dim}, got {state_array.shape[0]}")
+
+        with torch.inference_mode():
+            state_tensor = torch.from_numpy(state_array)
+            self._inference_buf[0].copy_(state_tensor, non_blocking=True)
+            q_values = self.policy_net(self._inference_buf)
             return q_values.argmax().item()
     
     def select_action(self, state: np.ndarray, explore: bool = True) -> int:
@@ -172,21 +206,30 @@ class DQNAgent:
                            Returns None if there are not enough samples in the replay buffer
                            or if the sample returned None.
         """
+        if self.env_steps < self.learning_starts:
+            return None
+
         if len(self.memory) < self.batch_size:
             return None
         
         # Sample a batch
-        states, actions, rewards, next_states, dones = self.memory.sample(self.batch_size)
-        
-        if states is None:
+        batch = self.memory.sample(self.batch_size)
+        if batch is None:
             return None
+
+        if self.use_prioritized:
+            states, actions, rewards, next_states, dones, indices, weights = batch
+        else:
+            states, actions, rewards, next_states, dones = batch
+            indices = None
+            weights = None
         
         # Convert to PyTorch tensors on the correct device
-        states = torch.FloatTensor(states).to(self.device)
-        actions = torch.LongTensor(actions).unsqueeze(1).to(self.device)
-        rewards = torch.FloatTensor(rewards).to(self.device)
-        next_states = torch.FloatTensor(next_states).to(self.device)
-        dones = torch.FloatTensor(dones).to(self.device)
+        states = torch.from_numpy(states).to(self.device, dtype=torch.float32, non_blocking=True)
+        actions = torch.from_numpy(actions).to(self.device, dtype=torch.long, non_blocking=True).unsqueeze(1)
+        rewards = torch.from_numpy(rewards).to(self.device, dtype=torch.float32, non_blocking=True)
+        next_states = torch.from_numpy(next_states).to(self.device, dtype=torch.float32, non_blocking=True)
+        dones = torch.from_numpy(dones.astype(np.float32)).to(self.device, dtype=torch.float32, non_blocking=True)
         
         # Calculate Q-values for current states
         current_q_values = self.policy_net(states)
@@ -213,7 +256,16 @@ class DQNAgent:
         current_q_values = current_q_values.gather(1, actions)
         
         # Calculate loss (Huber loss for stability)
-        loss = F.smooth_l1_loss(current_q_values, target_q_values)
+        per_item_loss = F.smooth_l1_loss(current_q_values, target_q_values, reduction='none')
+        if self.use_prioritized:
+            weights_tensor = torch.from_numpy(weights).to(
+                self.device, dtype=torch.float32, non_blocking=True
+            ).unsqueeze(1)
+            loss = (per_item_loss * weights_tensor).mean()
+            td_errors = (current_q_values - target_q_values).detach().abs().squeeze(1)
+            self.memory.update_priorities(indices, td_errors.cpu().numpy() + 1e-6)
+        else:
+            loss = per_item_loss.mean()
         
         # Backpropagation
         self.optimizer.zero_grad()
@@ -229,19 +281,27 @@ class DQNAgent:
         self.losses.append(loss.item())
         
         # Log training info periodically
-        if self.steps % 100 == 0:
-            self.logger.debug(f"Step {self.steps}: Loss = {loss.item():.4f}, Epsilon = {self.epsilon:.4f}")
+        if self.train_steps % 100 == 0:
+            self.logger.debug(
+                f"Train step {self.train_steps}: Loss = {loss.item():.4f}, Epsilon = {self.epsilon:.4f}"
+            )
         
-        # Decay epsilon and increment step counter (only if training occurred)
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        self.steps += 1
+        self.train_steps += 1
         
-        # Update target network periodically
-        if self.steps % self.target_update_freq == 0:
+        # Update target network according to the configured mode
+        if self.target_update_mode == "polyak":
             self.update_target()
+        elif self.train_steps % self.target_update_freq == 0:
+            self.update_target(hard_update=True)
         
         return loss.item()
-    
+
+    def on_env_step(self) -> None:
+        """Advance env-step counter and decay epsilon once per environment step."""
+        self.env_steps += 1
+        self.steps = self.env_steps
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+     
     def update_target(self, hard_update: bool = False):
         """Update target network weights from policy network.
         
@@ -281,16 +341,24 @@ class DQNAgent:
             path: str - file path to save to
         """
         torch.save({
+            'state_version': self.state_version,
+            'state_dim': self.state_dim,
             'policy_net_state_dict': self.policy_net.state_dict(),
             'target_net_state_dict': self.target_net.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'epsilon': self.epsilon,
             'steps': self.steps,
+            'env_steps': self.env_steps,
+            'train_steps': self.train_steps,
             'episodes': self.episodes,
             'total_loss': self.total_loss,
             'best_lap_time': self.best_lap_time,
+            'learning_starts': self.learning_starts,
+            'target_update_mode': self.target_update_mode,
+            'target_update_freq': self.target_update_freq,
             'polyak_tau': self.polyak_tau,
             'grad_clip_norm': self.grad_clip_norm,
+            'use_prioritized': self.use_prioritized,
         }, path)
         self.logger.info(f"Agent saved to {path}")
     
@@ -302,16 +370,36 @@ class DQNAgent:
             path: str - file path to load from
         """
         checkpoint = torch.load(path, map_location=self.device)
+
+        checkpoint_version = checkpoint.get('state_version', 1)
+        if checkpoint_version != self.state_version:
+            raise ValueError(
+                f"Checkpoint trained with state_version={checkpoint_version}, "
+                f"but code expects state_version={self.state_version}"
+            )
+
+        checkpoint_state_dim = checkpoint.get('state_dim', self.state_dim)
+        if checkpoint_state_dim != self.state_dim:
+            raise ValueError(
+                f"Checkpoint trained with state_dim={checkpoint_state_dim}, "
+                f"but agent expects state_dim={self.state_dim}"
+            )
         
         self.policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
         self.target_net.load_state_dict(checkpoint['target_net_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.epsilon = checkpoint['epsilon']
-        self.steps = checkpoint['steps']
+        legacy_steps = checkpoint.get('steps', 0)
+        self.env_steps = checkpoint.get('env_steps', legacy_steps)
+        self.train_steps = checkpoint.get('train_steps', legacy_steps)
+        self.steps = self.env_steps
         self.episodes = checkpoint['episodes']
         self.total_loss = checkpoint['total_loss']
         self.best_lap_time = checkpoint.get('best_lap_time', float('inf'))
-        self.polyak_tau = checkpoint.get('polyak_tau', 0.005)
+        self.learning_starts = checkpoint.get('learning_starts', self.learning_starts)
+        self.target_update_mode = checkpoint.get('target_update_mode', self.target_update_mode)
+        self.target_update_freq = checkpoint.get('target_update_freq', self.target_update_freq)
+        self.polyak_tau = checkpoint.get('polyak_tau', config.POLYAK_TAU)
         self.grad_clip_norm = checkpoint.get('grad_clip_norm', 1.0)
         
         # Move networks to device after loading
@@ -324,14 +412,16 @@ class DQNAgent:
         """Increment the episode counter."""
         self.episodes += 1
     
-    def get_stats(self) -> Dict[str, Union[int, float]]:
+    def get_stats(self) -> Dict[str, Any]:
         """
         Get training statistics.
         
         Returns:
-            Dict[str, Union[int, float]]: Dictionary containing training statistics:
+            Dict[str, Any]: Dictionary containing training statistics:
                 - episodes: int - number of episodes completed
-                - steps: int - number of training steps
+                - steps: int - number of environment steps
+                - env_steps: int - number of environment steps
+                - train_steps: int - number of training updates
                 - epsilon: float - current exploration rate
                 - avg_loss: float - average loss over last 100 updates
                 - total_loss: float - cumulative loss
@@ -340,12 +430,15 @@ class DQNAgent:
         """
         return {
             'episodes': self.episodes,
-            'steps': self.steps,
+            'steps': self.env_steps,
+            'env_steps': self.env_steps,
+            'train_steps': self.train_steps,
             'epsilon': self.epsilon,
-            'avg_loss': np.mean(self.losses[-100:]) if self.losses else 0.0,
+            'avg_loss': float(np.mean(self.losses[-100:])) if self.losses else 0.0,
             'total_loss': self.total_loss,
             'memory_size': len(self.memory),
             'best_lap_time': self.best_lap_time,
+            'target_update_mode': self.target_update_mode,
         }
 
 
@@ -414,10 +507,11 @@ def test_agent():
     print("Testing DQNAgent...")
     
     # Create agent
-    agent = DQNAgent(state_dim=10, action_dim=5, batch_size=32)
+    state_dim = config.STATE_DIM
+    agent = DQNAgent(state_dim=state_dim, action_dim=5, batch_size=32, learning_starts=0)
     
     # Test action selection
-    state = np.random.randn(10)
+    state = np.random.randn(state_dim)
     
     # Test exploration
     action = agent.select_action(state, explore=True)
@@ -458,7 +552,9 @@ def test_agent():
     
     # Test Double DQN variant
     print("\nTesting Double DQN variant...")
-    agent_ddqn = DQNAgent(state_dim=10, action_dim=5, batch_size=32, use_double_dqn=True)
+    agent_ddqn = DQNAgent(
+        state_dim=state_dim, action_dim=5, batch_size=32, use_double_dqn=True, learning_starts=0
+    )
     for _ in range(32):
         agent_ddqn.remember(state, action, 1.0, state, False)
     loss_ddqn = agent_ddqn.update()
@@ -467,16 +563,41 @@ def test_agent():
     
     # Test Dueling DQN variant
     print("\nTesting Dueling DQN variant...")
-    agent_duel = DQNAgent(state_dim=10, action_dim=5, batch_size=32, use_dueling=True)
+    agent_duel = DQNAgent(
+        state_dim=state_dim, action_dim=5, batch_size=32, use_dueling=True, learning_starts=0
+    )
     for _ in range(32):
         agent_duel.remember(state, action, 1.0, state, False)
     loss_duel = agent_duel.update()
     print(f"Dueling DQN update loss: {loss_duel}")
     assert loss_duel is not None and loss_duel >= 0, "Dueling DQN should work"
+
+    # Test prioritized replay path
+    print("\nTesting prioritized replay variant...")
+    agent_per = DQNAgent(
+        state_dim=state_dim,
+        action_dim=5,
+        batch_size=32,
+        learning_starts=0,
+        use_prioritized=True,
+    )
+    for _ in range(32):
+        agent_per.remember(state, action, 1.0, state, False)
+    loss_per = agent_per.update()
+    print(f"Prioritized replay update loss: {loss_per}")
+    assert loss_per is not None and loss_per >= 0, "Prioritized replay should work"
     
     # Test Polyak averaging
     print("\nTesting Polyak averaging...")
-    agent_polyak = DQNAgent(state_dim=10, action_dim=5, batch_size=32, polyak_tau=0.01)
+    agent_polyak = DQNAgent(
+        state_dim=state_dim,
+        action_dim=5,
+        batch_size=32,
+        learning_starts=0,
+        target_update_mode="hard",
+        target_update_freq=999999,
+        polyak_tau=0.01,
+    )
     
     # First, modify the policy network weights (by doing a dummy update)
     # This ensures the policy weights differ from the target weights
@@ -534,7 +655,7 @@ def test_agent():
         agent.save(path)
         
         # Create new agent and load
-        agent2 = DQNAgent(state_dim=10, action_dim=5)
+        agent2 = DQNAgent(state_dim=state_dim, action_dim=5)
         agent2.load(path)
         
         assert agent2.epsilon == agent.epsilon, "Epsilon should match"

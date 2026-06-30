@@ -48,6 +48,8 @@ class Car:
         
         # For sensors (RL agent)
         self.sensor_readings = [0.0] * config.NUM_SENSORS
+        self._cached_nearby_segments = None
+        self._cached_nearby_position = None
     
     def update(self, throttle=0.0, steering=0.0, dt=config.DT):
         """
@@ -115,13 +117,12 @@ class Car:
         
         # Update position
         self.position += self.velocity * dt
+        self.angle = (self.angle + np.pi) % (2 * np.pi) - np.pi
         
-        # Clear cached nearby segments when position changes significantly
-        # (more than a small threshold to avoid clearing too often)
-        if hasattr(self, '_cached_nearby_segments') and self._cached_nearby_segments is not None:
-            position_change = np.linalg.norm(self.velocity * dt)
-            if position_change > 50:  # Clear cache if moved more than 50 pixels
+        if hasattr(self, '_cached_nearby_position') and self._cached_nearby_position is not None:
+            if np.linalg.norm(self.position - self._cached_nearby_position) > 50:
                 self._cached_nearby_segments = None
+                self._cached_nearby_position = None
     
     def get_state(self):
         """
@@ -155,8 +156,11 @@ class Car:
         readings = []
         max_distance = config.SENSOR_MAX_DISTANCE
         
-        # Cache track boundaries to avoid repeated calls
-        boundaries = track.get_boundaries()
+        # Cache track boundaries to avoid repeated conversions in ray casts
+        if hasattr(track, 'get_boundary_arrays'):
+            boundaries = track.get_boundary_arrays()
+        else:
+            boundaries = track.get_boundaries()
         
         # Pre-calculate car angle cos and sin for efficiency
         car_cos = np.cos(self.angle)
@@ -170,6 +174,7 @@ class Car:
                 self._cached_nearby_segments = track.get_nearby_segments(
                     tuple(self.position), max_distance + 50
                 )
+                self._cached_nearby_position = self.position.copy()
             nearby_segment_indices = self._cached_nearby_segments
         
         for i, sensor_angle in enumerate(config.SENSOR_ANGLES):
@@ -229,9 +234,11 @@ class Car:
         """
         self.position = np.array(position, dtype=float)
         self.velocity = np.array([0.0, 0.0], dtype=float)
-        self.angle = float(angle)
+        self.angle = (float(angle) + np.pi) % (2 * np.pi) - np.pi
         self.speed = 0.0
         self.steering_angle = 0.0
+        self._cached_nearby_segments = None
+        self._cached_nearby_position = None
     
     def draw(self, screen):
         """
@@ -280,12 +287,6 @@ class Car:
             self.position[1] + half_height * np.sin(self.angle)
         )
         pygame.draw.circle(screen, config.Colors.RED, (int(front_center[0]), int(front_center[1])), 5)
-        
-        # Draw speed indicator (optional debug)
-        # if abs(self.speed) > 0.1:
-        #     font = pygame.font.SysFont(None, 24)
-        #     speed_text = font.render(f"{abs(self.speed):.1f}", True, config.Colors.WHITE)
-        #     screen.blit(speed_text, (self.position[0] - 20, self.position[1] - 30))
         
         # Draw steering indicator
         if abs(self.steering_angle) > 0.01:

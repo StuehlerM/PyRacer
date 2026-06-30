@@ -8,7 +8,7 @@ A complete 2D racing game where an AI agent learns to drive on procedurally gene
 
 - **Procedural Track Generation**: Random 2D tracks with Catmull-Rom splines for smooth, natural curves
 - **Physics-based Car**: Realistic car physics with acceleration, braking, steering, and friction
-- **RL Agent**: Double DQN and Dueling DQN implementations with experience replay
+- **RL Agent**: Double DQN and Dueling DQN implementations with uniform or prioritized experience replay
 - **Sensor-based State**: 7 raycast sensors for environment perception (mimics real car sensors)
 - **Complete Training Pipeline**: Training, testing, logging, and model checkpointing
 - **Multi-track Training**: Support for training on multiple tracks for better generalization
@@ -171,7 +171,6 @@ Pyracer/
   - Braking and reverse
   - Friction/drag modeling
   - Steering with automatic return-to-center
-  - Drifting effects (car angle aligns with movement direction)
 - **Sensors**: 7 raycast sensors at angles [-90°, -60°, -30°, 0°, 30°, 60°, 90°]
   - Normalized readings (0-1) based on distance to track boundaries
   - Spatial partitioning for fast raycasting
@@ -191,7 +190,7 @@ Pyracer/
 #### DQN Agent (`agent.py`)
 - **Algorithm**: Double DQN with improvements
   - Experience replay buffer (10,000 transitions)
-  - Target network (updated every 10 steps)
+  - Target network (Polyak-updated every training step by default)
   - Epsilon-greedy exploration (starts at 1.0, decays to 0.01)
   - Batch training (64 samples per update)
   - Gradient clipping for stability
@@ -205,7 +204,7 @@ Pyracer/
 - **RacingEnv**: Single track environment with Gym-like interface
 - **MultiTrackEnv**: Cycles through multiple tracks for generalization
 - **Features**:
-  - State normalization
+  - Already-normalized sensor, speed, heading, and progress state
   - Statistics tracking (lap times, rewards)
   - Rendering support
 
@@ -230,7 +229,7 @@ Pyracer/
 4. Clamp speed to maximum
 5. Calculate velocity direction based on angle and steering
 6. Update position
-7. Align car angle with movement direction (for drifting)
+7. Keep heading wrapped to [-pi, pi] for stable state encoding
 
 #### Sensor System (per frame, RL mode only)
 1. For each of 7 sensors at different angles:
@@ -239,26 +238,27 @@ Pyracer/
    - Return normalized distance (0-1) based on max range
 
 #### Reward System
-- **Lap Complete**: +100 points (+50% bonus for new best lap)
-- **Checkpoint**: +10 points
-- **Progress**: +1 point per % of track completed
-- **Collision**: -10 points (episode ends)
-- **Time Penalty**: -0.05 per step (encourages speed)
+- **Lap Complete**: +200 points (+50% bonus for new best lap)
+- **Checkpoint**: +5 points
+- **Progress**: +25 points per fractional track progress
+- **Collision**: -50 points (episode ends)
+- **Time Penalty**: -0.01 per step (encourages speed)
 
 ### 🧠 Reinforcement Learning
 
-#### State Representation (10 dimensions)
+#### State Representation (11 dimensions)
 ```
 State = [
-    sensor_0,   # Front sensor (0°)
-    sensor_1,   # Front-right sensor (30°)
-    sensor_2,   # Right sensor (60°)
-    sensor_3,   # Rear-right sensor (90°)
-    sensor_4,   # Rear-left sensor (-90°)
-    sensor_5,   # Left sensor (-60°)
-    sensor_6,   # Front-left sensor (-30°)
-    speed,       # Normalized car speed (0-1)
-    angle,       # Car angle in radians
+    sensor_0,   # -90° left
+    sensor_1,   # -60°
+    sensor_2,   # -30°
+    sensor_3,   # 0° front
+    sensor_4,   # 30°
+    sensor_5,   # 60°
+    sensor_6,   # 90° right
+    speed,       # Normalized car speed (-1 to 1)
+    sin_angle,   # Sine of wrapped car heading
+    cos_angle,   # Cosine of wrapped car heading
     progress     # Progress along track (0-1)
 ]
 ```
@@ -287,8 +287,8 @@ State = [
    - Use target network to estimate value of next state
    - Calculate target: reward + γ * Q_target(next_state, best_action)
    - Minimize Huber loss between current Q and target Q
-8. Decay exploration rate ε
-9. Update target network every 10 steps
+8. Decay exploration rate ε once per environment step
+9. Update target network using configured mode (`polyak` by default)
 10. Repeat for all episodes
 ```
 
@@ -362,7 +362,8 @@ SENSOR_ANGLES = [-90, -60, -30, 0, 30, 60, 90]  # degrees
 
 ### RL Hyperparameters
 ```python
-STATE_DIM = 10  # 7 sensors + speed + angle + progress
+STATE_DIM = 11  # 7 sensors + speed + sin(angle) + cos(angle) + progress
+STATE_VERSION = 2
 ACTION_DIM = 5
 HIDDEN_DIM = 128
 LEARNING_RATE = 0.001
@@ -372,16 +373,19 @@ EPSILON_MIN = 0.01
 EPSILON_DECAY = 0.995
 MEMORY_SIZE = 10000
 BATCH_SIZE = 64
-TARGET_UPDATE_FREQ = 10
+LEARNING_STARTS = 1000
+TARGET_UPDATE_MODE = "polyak"
+TARGET_UPDATE_FREQ = 1000
+POLYAK_TAU = 0.005
 ```
 
 ### Rewards
 ```python
-REWARD_LAP_COMPLETE = 100.0
-REWARD_CHECKPOINT = 10.0
-REWARD_COLLISION = -10.0
-REWARD_TIME_PENALTY = -0.05
-REWARD_PROGRESS = 1.0
+REWARD_LAP_COMPLETE = 200.0
+REWARD_CHECKPOINT = 5.0
+REWARD_COLLISION = -50.0
+REWARD_TIME_PENALTY = -0.01
+REWARD_PROGRESS = 25.0
 ```
 
 ---

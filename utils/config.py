@@ -51,7 +51,8 @@ class Config:
     # =====================
     # RL Settings - DQN
     # =====================
-    STATE_DIM = NUM_SENSORS + 3  # Sensors + speed + angle + progress
+    STATE_DIM = NUM_SENSORS + 4  # Sensors + speed + sin(angle) + cos(angle) + progress
+    STATE_VERSION = 2  # Bump when state vector layout changes
     ACTION_DIM = 5  # Number of discrete actions
     HIDDEN_DIM = 128
     LEARNING_RATE = 0.001
@@ -61,25 +62,31 @@ class Config:
     EPSILON_DECAY = 0.995  # Exploration decay rate
     MEMORY_SIZE = 10000  # Replay buffer size
     BATCH_SIZE = 64
-    TARGET_UPDATE_FREQ = 10  # Steps between target network updates
+    LEARNING_STARTS = 1000  # Environment steps to collect before training
+    TARGET_UPDATE_MODE = "polyak"  # Options: "polyak", "hard"
+    TARGET_UPDATE_FREQ = 1000  # Train steps between hard target updates
+    POLYAK_TAU = 0.005  # Soft target update rate when TARGET_UPDATE_MODE == "polyak"
+    PRIORITIZED_REPLAY_ALPHA = 0.6
+    PRIORITIZED_REPLAY_BETA = 0.4
     
     # =====================
     # Training Settings
     # =====================
     NUM_EPISODES = 10000
     MAX_STEPS_PER_EPISODE = 2000
-    TRAIN_START_EPISODE = 100  # Start training after this many episodes
+    TRAIN_START_EPISODE = 100  # Deprecated: use LEARNING_STARTS for env-step warm-up
     SAVE_FREQ = 50  # Save model every N episodes
     LOG_FREQ = 10  # Log training every N episodes
+    DEFAULT_SEED = None  # Set to an int for reproducible runs by default
     
     # =====================
     # Reward Settings
     # =====================
-    REWARD_LAP_COMPLETE = 100.0
-    REWARD_CHECKPOINT = 10.0
-    REWARD_COLLISION = -10.0
-    REWARD_TIME_PENALTY = -0.05  # Per step penalty to encourage speed
-    REWARD_PROGRESS = 1.0  # Reward per % progress made
+    REWARD_LAP_COMPLETE = 200.0
+    REWARD_CHECKPOINT = 5.0
+    REWARD_COLLISION = -50.0
+    REWARD_TIME_PENALTY = -0.01  # Per step penalty to encourage speed
+    REWARD_PROGRESS = 25.0  # Reward per fractional progress made
     
     # =====================
     # Action Mapping
