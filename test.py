@@ -10,11 +10,12 @@ This script provides various test modes:
 
 import argparse
 import os
-import time
+import random
 import numpy as np
 import json
 import csv
 from datetime import datetime
+import torch
 
 from game.track import Track
 from rl.agent import DQNAgent, RandomAgent
@@ -44,8 +45,27 @@ def parse_args():
                         help='Output directory for results')
     parser.add_argument('--record', action='store_true',
                         help='Record test results to file')
+    parser.add_argument('--render-every-n', type=int, default=1,
+                        help='Render every Nth step when rendering')
+    parser.add_argument('--seed', type=int, default=config.DEFAULT_SEED,
+                        help='Random seed for reproducible runs')
+    parser.add_argument('--deterministic', action='store_true',
+                        help='Use deterministic torch algorithms where available')
     
     return parser.parse_args()
+
+
+def set_seed(seed, deterministic=False):
+    """Seed Python, NumPy, and torch random sources."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 class TestResult:
@@ -181,7 +201,6 @@ def test_agent(agent, env, num_episodes, render=False, name="Agent"):
             # Render
             if render:
                 env.render()
-                time.sleep(0.01)
         
         # Calculate average progress
         avg_progress = total_progress / max(1, steps)
@@ -217,7 +236,8 @@ def compare_agents(args):
     print("=" * 60)
     
     # Create environment
-    env = RacingEnv(render=args.render)
+    track = Track(seed=args.seed) if args.seed is not None else None
+    env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
     
     # Test random agent
     random_agent = RandomAgent(config.ACTION_DIM)
@@ -227,6 +247,7 @@ def compare_agents(args):
     )
     
     # Test trained agent
+    trained_result = None
     if args.model and os.path.exists(args.model):
         trained_agent = DQNAgent(
             state_dim=config.STATE_DIM,
@@ -270,7 +291,8 @@ def compare_agents(args):
     
     # Save results if requested
     if args.record:
-        _save_results(args, random_result, trained_result if args.model else None)
+        results = (random_result, trained_result) if trained_result is not None else (random_result,)
+        _save_results(args, *results)
 
 
 def test_multi_track(args):
@@ -283,7 +305,13 @@ def test_multi_track(args):
     print(f"\nTesting on {args.num_tracks} tracks...")
     
     # Create multi-track environment with eval_mode for testing
-    env = MultiTrackEnv(num_tracks=args.num_tracks, render=args.render, eval_mode=True)
+    env = MultiTrackEnv(
+        num_tracks=args.num_tracks,
+        render=args.render,
+        eval_mode=True,
+        render_every_n=args.render_every_n,
+        seed=args.seed,
+    )
     
     # Create and load agent
     if args.model and os.path.exists(args.model):
@@ -356,6 +384,9 @@ def _save_results(args, *results):
 def main():
     """Main entry point."""
     args = parse_args()
+
+    if args.seed is not None:
+        set_seed(args.seed, deterministic=args.deterministic)
     
     if args.compare:
         compare_agents(args)
@@ -363,7 +394,8 @@ def main():
         test_multi_track(args)
     else:
         # Simple test
-        env = RacingEnv(render=args.render)
+        track = Track(seed=args.seed) if args.seed is not None else None
+        env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
         
         if args.model and os.path.exists(args.model):
             agent = DQNAgent(

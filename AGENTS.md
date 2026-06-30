@@ -162,7 +162,7 @@ User runs: python train.py --episodes 1000
 - `utils/config.py` - RL hyperparameters
 
 **Key principles:**
-- State dimension: 10 (7 sensors + speed + angle + progress)
+- State dimension: 11 (7 sensors + speed + sin(angle) + cos(angle) + progress)
 - Action dimension: 5 (see ACTIONS in config.py)
 - Reward shaping: Encourages progress, penalizes collisions/time
 - Double DQN: Separates action selection and evaluation
@@ -174,7 +174,7 @@ User runs: python train.py --episodes 1000
 ### 1. State Representation
 
 ```python
-# State vector (10 dimensions)
+# State vector (11 dimensions)
 state = [
     # Sensors (7 values, normalized 0-1)
     sensor_reading_0,   # -90° (left)
@@ -185,9 +185,10 @@ state = [
     sensor_reading_5,   #  60°
     sensor_reading_6,   #  90° (right)
     
-    # Car state (3 values)
+    # Car state (4 values)
     normalized_speed,    # speed / max_speed
-    angle,              # in radians
+    sin_angle,          # sin(wrapped heading)
+    cos_angle,          # cos(wrapped heading)
     progress            # 0-1 along track
 ]
 ```
@@ -222,33 +223,33 @@ ACTIONS = {
 
 # Progress reward (per step)
 progress_diff = current_progress - prev_progress
-reward += progress_diff * config.REWARD_PROGRESS  # +1 per % progress
+reward += progress_diff * config.REWARD_PROGRESS  # +25 per fractional progress
 
 # Checkpoint reward
 if new_checkpoint_reached:
-    reward += config.REWARD_CHECKPOINT  # +10
+    reward += config.REWARD_CHECKPOINT  # +5
 
 # Lap completion reward
 if lap_completed:
-    reward += config.REWARD_LAP_COMPLETE  # +100
+    reward += config.REWARD_LAP_COMPLETE  # +200
     if new_best_lap:
         reward *= 1.5  # Bonus for new best
 
 # Collision penalty
 if collision:
-    reward += config.REWARD_COLLISION  # -10
+    reward += config.REWARD_COLLISION  # -50
     done = True
 
 # Time penalty (per step)
-reward += config.REWARD_TIME_PENALTY  # -0.05
+reward += config.REWARD_TIME_PENALTY  # -0.01
 ```
 
 ### 4. DQN Algorithm Flow
 
 ```
 Initialize:
-  policy_net = DQN(state_dim=10, action_dim=5, hidden_dim=128)
-  target_net = DQN(state_dim=10, action_dim=5, hidden_dim=128)
+  policy_net = DQN(state_dim=11, action_dim=5, hidden_dim=128)
+  target_net = DQN(state_dim=11, action_dim=5, hidden_dim=128)
   target_net.load_state_dict(policy_net.state_dict())
   memory = ReplayBuffer(capacity=10000)
   optimizer = Adam(policy_net.parameters(), lr=0.001)
@@ -278,11 +279,13 @@ Training step:
        clip_grad_norm_(policy_net.parameters(), 1.0)
        optimizer.step()
   
-  7. epsilon = max(epsilon_min, epsilon * epsilon_decay)
-  8. steps += 1
+  7. env_steps += 1
+  8. epsilon = max(epsilon_min, epsilon * epsilon_decay)
   
-  9. If steps % target_update_freq == 0:
-       target_net.load_state_dict(policy_net.state_dict())
+  9. If target_update_mode == "polyak":
+       soft-update target_net every train step
+     Else if train_steps % target_update_freq == 0:
+       hard-copy policy_net to target_net
 ```
 
 ### 5. Track Generation
@@ -486,7 +489,8 @@ SENSOR_ANGLES = [-90, -60, -30, 0, 30, 60, 90]  # Degrees
 
 ### RL Hyperparameters
 ```python
-STATE_DIM = 10             # 7 sensors + speed + angle + progress
+STATE_DIM = 11             # 7 sensors + speed + sin(angle) + cos(angle) + progress
+STATE_VERSION = 2
 ACTION_DIM = 5
 HIDDEN_DIM = 128
 LEARNING_RATE = 0.001
@@ -496,23 +500,27 @@ EPSILON_MIN = 0.01        # Minimum exploration rate
 EPSILON_DECAY = 0.995     # Decay rate per step
 MEMORY_SIZE = 10000       # Replay buffer size
 BATCH_SIZE = 64
-TARGET_UPDATE_FREQ = 10  # Steps between target network updates
+LEARNING_STARTS = 1000
+TARGET_UPDATE_MODE = "polyak"
+TARGET_UPDATE_FREQ = 1000  # Train steps between hard target updates
+POLYAK_TAU = 0.005
 ```
 
 ### Rewards
 ```python
-REWARD_LAP_COMPLETE = 100.0
-REWARD_CHECKPOINT = 10.0
-REWARD_COLLISION = -10.0
-REWARD_TIME_PENALTY = -0.05  # Per step
-REWARD_PROGRESS = 1.0      # Per % progress
+REWARD_LAP_COMPLETE = 200.0
+REWARD_CHECKPOINT = 5.0
+REWARD_COLLISION = -50.0
+REWARD_TIME_PENALTY = -0.01  # Per step
+REWARD_PROGRESS = 25.0      # Per fractional progress
 ```
 
 ### Training
 ```python
 NUM_EPISODES = 10000
 MAX_STEPS_PER_EPISODE = 2000
-TRAIN_START_EPISODE = 100  # Start training after N episodes
+LEARNING_STARTS = 1000  # Start training after N environment steps
+TRAIN_START_EPISODE = 100  # Deprecated; kept for compatibility
 SAVE_FREQ = 50           # Save model every N episodes
 LOG_FREQ = 10            # Log every N episodes
 ```
@@ -623,16 +631,16 @@ assert car.speed > 0
 # Test agent
 from rl.agent import DQNAgent
 import numpy as np
-agent = DQNAgent(state_dim=10, action_dim=5)
-state = np.random.rand(10)
+agent = DQNAgent(state_dim=11, action_dim=5)
+state = np.random.rand(11)
 action = agent.select_action(state)
 assert 0 <= action < 5
 
 # Test model
 from rl.model import DQN
 import torch
-model = DQN(input_dim=10, output_dim=5, hidden_dim=64)
-input_tensor = torch.randn(1, 10)
+model = DQN(input_dim=11, output_dim=5, hidden_dim=64)
+input_tensor = torch.randn(1, 11)
 output = model(input_tensor)
 assert output.shape == (1, 5)
 ```

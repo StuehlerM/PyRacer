@@ -136,36 +136,79 @@ def ray_cast(start, direction, max_distance, track_segments, segment_indices=Non
     else:
         return max_distance
     
-    # Ray end point
-    ray_end = start + direction * max_distance
-    
-    min_distance = max_distance
-    
-    # Determine which segments to check
-    if segment_indices is not None and len(segment_indices) < len(track_segments):
-        # Use only the specified segment indices (for spatial partitioning optimization)
-        segments_to_check = [track_segments[i] for i in segment_indices]
-    else:
-        # Check all segments
-        segments_to_check = track_segments
-    
-    # Check intersection with each track segment
-    # Early exit optimization: if we find a very close intersection, return immediately
-    for segment_start, segment_end in segments_to_check:
-        intersection, intersects = line_segment_intersection(
-            start, ray_end, segment_start, segment_end
+    seg_starts, seg_ends = _segments_to_arrays(track_segments)
+    if seg_starts.size == 0:
+        return max_distance
+
+    if segment_indices is not None:
+        segment_indices = np.asarray(segment_indices, dtype=np.int64)
+        if segment_indices.size == 0:
+            return max_distance
+        seg_starts = seg_starts[segment_indices]
+        seg_ends = seg_ends[segment_indices]
+
+    return ray_cast_batch(start, direction, max_distance, seg_starts, seg_ends)
+
+
+def _segments_to_arrays(track_segments):
+    """Return segment start/end arrays from cached arrays or tuple segments."""
+    if isinstance(track_segments, tuple) and len(track_segments) == 2:
+        return (
+            np.asarray(track_segments[0], dtype=float),
+            np.asarray(track_segments[1], dtype=float),
         )
-        
-        if intersects:
-            # Calculate distance from start to intersection
-            distance = np.linalg.norm(intersection - start)
-            if distance < min_distance:
-                min_distance = distance
-                # Early exit if we found a very close intersection
-                if min_distance < 1.0:  # If very close, likely the closest
-                    break
-    
-    return min_distance
+
+    segments = np.asarray(track_segments, dtype=float)
+    if segments.size == 0:
+        return np.empty((0, 2), dtype=float), np.empty((0, 2), dtype=float)
+    return segments[:, 0, :], segments[:, 1, :]
+
+
+def ray_cast_batch(start, direction, max_distance, seg_starts, seg_ends):
+    """
+    Cast a ray against many segments using vectorized line intersection.
+
+    Args:
+        start: shape (2,) ray origin
+        direction: shape (2,) normalized ray direction
+        max_distance: float - maximum ray length
+        seg_starts: shape (N, 2) segment starts
+        seg_ends: shape (N, 2) segment ends
+
+    Returns:
+        float: distance to first intersection, or max_distance if none
+    """
+    if len(seg_starts) == 0:
+        return max_distance
+
+    p1 = np.asarray(start, dtype=float)
+    direction = np.asarray(direction, dtype=float)
+    p2 = p1 + direction * max_distance
+    p3 = np.asarray(seg_starts, dtype=float)
+    p4 = np.asarray(seg_ends, dtype=float)
+
+    d1 = p2 - p1
+    d2 = p4 - p3
+    denom = d2[:, 1] * d1[0] - d2[:, 0] * d1[1]
+
+    valid = np.abs(denom) >= 1e-10
+    if not np.any(valid):
+        return max_distance
+
+    p1_minus_p3 = p1 - p3
+    ua_num = d2[:, 0] * p1_minus_p3[:, 1] - d2[:, 1] * p1_minus_p3[:, 0]
+    ub_num = d1[0] * p1_minus_p3[:, 1] - d1[1] * p1_minus_p3[:, 0]
+
+    ua = np.full(len(p3), np.nan, dtype=float)
+    ub = np.full(len(p3), np.nan, dtype=float)
+    ua[valid] = ua_num[valid] / denom[valid]
+    ub[valid] = ub_num[valid] / denom[valid]
+
+    hits = valid & (ua >= 0.0) & (ua <= 1.0) & (ub >= 0.0) & (ub <= 1.0)
+    if not np.any(hits):
+        return max_distance
+
+    return float(np.min(ua[hits]) * max_distance)
 
 
 def circle_polygon_collision(center, radius, polygon):

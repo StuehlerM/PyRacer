@@ -15,27 +15,37 @@ class Game:
     Supports both human play and RL training modes.
     """
     
-    def __init__(self, track=None, headless=False):
+    def __init__(self, track=None, headless=False, render_every_step=True, render_every_n=1):
         """
         Initialize the game.
         
         Args:
             track: Track - custom track (default: generates new track)
             headless: bool - run without rendering (for RL training)
+            render_every_step: bool - render automatically from step()
+            render_every_n: int - render every Nth automatic render step
         """
         self.headless = headless
+        self.render_every_step = render_every_step
+        self.render_every_n = max(1, int(render_every_n))
+        self._render_step_counter = 0
         
         # Initialize pygame if not headless
         if not headless:
             pygame.init()
+            pygame.font.init()
             pygame.display.set_caption(config.TITLE)
             self.screen = pygame.display.set_mode(
                 (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
             )
             self.clock = pygame.time.Clock()
+            self._font_hud = pygame.font.SysFont(None, 24)
+            self._font_pause = pygame.font.SysFont(None, 72)
         else:
             self.screen = None
             self.clock = None
+            self._font_hud = None
+            self._font_pause = None
         
         # Create track
         self.track = track or Track()
@@ -66,7 +76,7 @@ class Game:
         self.learning_mode = headless
         
         # For RL
-        self.prev_progress = 0.0
+        self.prev_progress = self.track.get_progress(tuple(self.car.position))
         self.steps_in_episode = 0
         self.max_steps = config.MAX_STEPS_PER_EPISODE
     
@@ -81,6 +91,8 @@ class Game:
         start_pos = self.track.start_position
         start_angle = self.track.start_angle
         self.car.reset(start_pos, start_angle)
+        if hasattr(self.track, 'reset_progress_hint'):
+            self.track.reset_progress_hint()
         
         # Reset game state
         self.lap_count = 0
@@ -90,7 +102,8 @@ class Game:
         self.best_lap_time = float('inf')
         self.episode_reward = 0.0
         self.steps_in_episode = 0
-        self.prev_progress = 0.0
+        self.prev_progress = self.track.get_progress(tuple(self.car.position))
+        self._render_step_counter = 0
         
         # Return initial observation
         return self._get_state()
@@ -269,9 +282,11 @@ class Game:
             'steps': self.steps_in_episode
         }
         
-        # Render if not headless - pass cached values
-        if not self.headless:
-            self.render(progress=current_progress, is_colliding=is_colliding)
+        # Render if automatic rendering is enabled - pass cached values
+        if not self.headless and self.render_every_step:
+            self._render_step_counter += 1
+            if self._render_step_counter % self.render_every_n == 0:
+                self.render(progress=current_progress, is_colliding=is_colliding)
         
         return state, reward, done, info
     
@@ -297,7 +312,7 @@ class Game:
         
         # Get car state
         car_speed = self.car.speed / self.car.max_speed  # Normalize speed
-        car_angle = self.car.angle  # Keep as is for now
+        car_angle = self.car.angle
         
         # Use provided progress or calculate
         if progress is None:
@@ -306,9 +321,7 @@ class Game:
         # Combine into state vector
         state = np.concatenate([
             sensor_readings,
-            [car_speed],
-            [car_angle],
-            [progress]
+            [car_speed, np.sin(car_angle), np.cos(car_angle), progress]
         ])
         
         return state.astype(np.float32)
@@ -379,8 +392,6 @@ class Game:
         # Update display
         pygame.display.flip()
         
-        # Cap FPS
-        self.clock.tick(config.FPS)
         self.frame_count += 1
     
     def _draw_hud(self, progress=None, is_colliding=False):
@@ -391,7 +402,7 @@ class Game:
             progress: float - pre-computed progress (optional)
             is_colliding: bool - pre-computed collision state (optional)
         """
-        font = pygame.font.SysFont(None, 24)
+        font = self._font_hud
         
         # Mode indicator (top-right)
         mode_text = font.render(f"Mode: {'LEARNING' if self.learning_mode else 'HUMAN'}", 
@@ -460,8 +471,7 @@ class Game:
             
             if self.paused:
                 # Draw paused message
-                font = pygame.font.SysFont(None, 72)
-                text = font.render("PAUSED", True, config.Colors.WHITE)
+                text = self._font_pause.render("PAUSED", True, config.Colors.WHITE)
                 text_rect = text.get_rect(center=(config.SCREEN_WIDTH//2, config.SCREEN_HEIGHT//2))
                 self.screen.blit(text, text_rect)
                 pygame.display.flip()
@@ -470,6 +480,7 @@ class Game:
             
             # Run game step
             _, _, _, _ = self.step(None)
+            self.clock.tick(config.FPS)
         
         pygame.quit()
     
