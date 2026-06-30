@@ -444,7 +444,7 @@ REWARD_SPEED_BONUS = 0.1
 # In utils/config.py
 NUM_SENSORS = 8  # Was 7
 SENSOR_ANGLES = np.deg2rad([-90, -60, -30, 0, 30, 60, 90, 180])  # Added 180°
-STATE_DIM = NUM_SENSORS + 3  # Recalculate
+STATE_DIM = NUM_SENSORS + 4  # Recalculate (sensors + speed + sin + cos + progress)
 ```
 
 ### Task 4: Change Neural Network Architecture
@@ -1092,7 +1092,7 @@ refactor: Optimize collision detection
 
 ### Pitfall 1: Forgetting to Update STATE_DIM
 **Problem:** Adding a sensor but forgetting to update `STATE_DIM`
-**Solution:** Always update `STATE_DIM = NUM_SENSORS + 3` in config
+**Solution:** Always update `STATE_DIM = NUM_SENSORS + 4` in config
 
 ### Pitfall 2: Mismatched Action Space
 **Problem:** Changing ACTIONS dict but not ACTION_DIM
