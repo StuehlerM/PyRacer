@@ -148,14 +148,14 @@ class Track:
     
     def _catmull_rom_spline(self, points, num_intermediate=10):
         """
-        Generate smooth Catmull-Rom spline through control points.
+        Generate smooth Catmull-Rom spline through control points (closed loop).
         
         Args:
             points: list of (x, y) tuples - control points
             num_intermediate: int - number of points to generate between each control point
         
         Returns:
-            list: list of (x, y) tuples forming the spline
+            list: list of (x, y) tuples forming the closed spline
         """
         if len(points) < 2:
             return points
@@ -163,17 +163,15 @@ class Track:
         n = len(points)
         spline_points = []
         
-        # For a closed loop, duplicate the first few points at the end
-        extended_points = points + [points[0], points[1]]
-        
         for i in range(n):
             p0 = points[(i - 1) % n]
             p1 = points[i % n]
             p2 = points[(i + 1) % n]
             p3 = points[(i + 2) % n]
             
-            # Generate intermediate points along this segment
-            for t in np.linspace(0, 1, num_intermediate + 1)[:num_intermediate]:
+            # Generate intermediate points along this segment (endpoint=False
+            # avoids duplicating control points shared between segments)
+            for t in np.linspace(0, 1, num_intermediate, endpoint=False):
                 # Catmull-Rom interpolation formula
                 x = 0.5 * ((2 * p1[0]) + 
                           (-p0[0] + p2[0]) * t + 
@@ -186,7 +184,15 @@ class Track:
                 
                 spline_points.append((x, y))
         
-        return spline_points
+        # Remove any near-duplicate points that could cause degenerate segments
+        cleaned = [spline_points[0]]
+        for pt in spline_points[1:]:
+            dx = pt[0] - cleaned[-1][0]
+            dy = pt[1] - cleaned[-1][1]
+            if dx * dx + dy * dy > 1.0:  # skip points closer than 1 pixel
+                cleaned.append(pt)
+        
+        return cleaned
     
     def _smooth_waypoints(self, points, iterations=1, factor=0.5):
         """
@@ -222,12 +228,16 @@ class Track:
     def _create_boundaries(self):
         """
         Create smooth inner and outer boundaries from the center waypoints.
-        Uses normals at each waypoint to create parallel offset curves.
+        Uses normals at each waypoint with miter limiting to prevent blow-up on sharp turns.
         """
         n = len(self.waypoints)
+        half_width = self.track_width / 2
+        # Maximum miter scale factor — limits offset on sharp corners
+        max_miter = 2.0
         
         # Calculate normals at each waypoint for smooth offset
         normals = []
+        miter_scales = []
         for i in range(n):
             # Get previous and next waypoints
             prev = np.array(self.waypoints[(i - 1) % n])
@@ -243,31 +253,43 @@ class Track:
             len_out = np.linalg.norm(edge_out)
             
             if len_in > 0 and len_out > 0:
-                edge_in = edge_in / len_in
-                edge_out = edge_out / len_out
+                edge_in_n = edge_in / len_in
+                edge_out_n = edge_out / len_out
+            elif len_out > 0:
+                edge_in_n = edge_out / len_out
+                edge_out_n = edge_in_n
+            else:
+                edge_in_n = np.array([1.0, 0.0])
+                edge_out_n = edge_in_n
             
             # Average tangent direction
-            tangent = (edge_in + edge_out) / 2
+            tangent = (edge_in_n + edge_out_n) / 2
             tangent_len = np.linalg.norm(tangent)
             
-            if tangent_len > 0:
+            if tangent_len > 1e-6:
                 tangent = tangent / tangent_len
+                # Miter scale: how much we need to extend offset to maintain
+                # constant distance from both edges. Clamped to prevent blow-up.
+                miter_scale = min(1.0 / tangent_len, max_miter)
             else:
-                # Fallback: use edge_out or a default direction
-                tangent = edge_out if len_out > 0 else np.array([1.0, 0.0])
+                # Near-180° turn: edges point in opposite directions
+                tangent = np.array([-edge_in_n[1], edge_in_n[0]])
+                miter_scale = 1.0
             
             # Calculate normal (perpendicular to tangent, pointing left)
             normal = np.array([-tangent[1], tangent[0]])
             normals.append(normal)
+            miter_scales.append(miter_scale)
         
-        # Create inner and outer boundary points
+        # Create inner and outer boundary points with miter-limited offsets
         for i in range(n):
             curr = np.array(self.waypoints[i])
             normal = normals[i]
+            scale = miter_scales[i]
             
-            # Calculate inner and outer points
-            inner_point = curr + normal * self.track_width / 2
-            outer_point = curr - normal * self.track_width / 2
+            offset = half_width * scale
+            inner_point = curr + normal * offset
+            outer_point = curr - normal * offset
             
             self.inner_boundary.append(tuple(inner_point))
             self.outer_boundary.append(tuple(outer_point))
@@ -661,32 +683,16 @@ class Track:
                 pygame.draw.circle(screen, config.Colors.RED, 
                                   (int(cp[0]), int(cp[1])), 5)
         
-        # Draw track surface as a single polygon strip
+        # Draw track surface as filled ring (outer polygon filled, inner cut with grass)
         if len(self.inner_boundary) >= 3 and len(self.outer_boundary) >= 3:
-            # Create a polygon that goes around the entire track
-            # inner_p0, inner_p1, inner_p2, ..., outer_p2, outer_p1, outer_p0
-            polygon_points = []
-            n = len(self.inner_boundary)
+            # Fill outer boundary with road color
+            pygame.draw.polygon(screen, colors.ROAD_COLOR, self.outer_boundary)
+            # Cut out inner area with grass to form the ring
+            pygame.draw.polygon(screen, colors.GRASS_COLOR, self.inner_boundary)
             
-            # Add inner boundary points in order
-            for i in range(n):
-                polygon_points.append(self.inner_boundary[i])
-            
-            # Add outer boundary points in reverse order
-            for i in range(n - 1, -1, -1):
-                polygon_points.append(self.outer_boundary[i])
-            
-            # Draw the entire track as one polygon
-            pygame.draw.polygon(screen, colors.ROAD_COLOR, polygon_points)
-            
-            # Draw track boundaries (white lines)
-            # Draw inner boundary line
-            inner_boundary_closed = list(self.inner_boundary) + [self.inner_boundary[0]]
-            pygame.draw.lines(screen, colors.WHITE, False, inner_boundary_closed, 3)
-            
-            # Draw outer boundary line
-            outer_boundary_closed = list(self.outer_boundary) + [self.outer_boundary[0]]
-            pygame.draw.lines(screen, colors.WHITE, False, outer_boundary_closed, 3)
+            # Draw track boundaries (white lines) — closed=True for seamless loop
+            pygame.draw.lines(screen, colors.WHITE, True, self.inner_boundary, 3)
+            pygame.draw.lines(screen, colors.WHITE, True, self.outer_boundary, 3)
         
         # Draw center line (dashed)
         for i in range(len(self.waypoints)):

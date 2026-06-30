@@ -25,6 +25,7 @@ import torch
 from game.track import Track
 from rl.agent import DQNAgent, RandomAgent
 from rl.environment import RacingEnv, MultiTrackEnv
+from jepa.agent import JEPAAgent
 from utils.config import config
 
 
@@ -87,6 +88,9 @@ def parse_args():
                         help='Test mode (run trained agent)')
     parser.add_argument('--test-episodes', type=int, default=10,
                         help='Number of test episodes')
+    parser.add_argument('--approach', type=str, default=config.DEFAULT_APPROACH,
+                        choices=['dqn', 'jepa'],
+                        help='Learning approach: dqn (reward-based RL) or jepa (self-supervised world model)')
     
     return parser.parse_args()
 
@@ -215,11 +219,13 @@ def train_agent(args):
         args: argparse.Namespace - command line arguments
     """
     print("Starting training...")
+    print(f"Approach: {args.approach.upper()}")
     print(f"Episodes: {args.episodes}")
     print(f"Render: {args.render}")
     print(f"Multi-track: {args.multi_track}")
-    print(f"Dueling DQN: {args.dueling}")
-    print(f"Prioritized replay: {args.prioritized}")
+    if args.approach == 'dqn':
+        print(f"Dueling DQN: {args.dueling}")
+        print(f"Prioritized replay: {args.prioritized}")
     print()
     
     # Initialize logger
@@ -238,24 +244,35 @@ def train_agent(args):
         track = Track(seed=args.seed) if args.seed is not None else None
         env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
     
-    # Create agent
-    agent = DQNAgent(
-        state_dim=config.STATE_DIM,
-        action_dim=config.ACTION_DIM,
-        lr=args.lr,
-        gamma=args.gamma,
-        epsilon=args.epsilon,
-        epsilon_min=args.epsilon_min,
-        epsilon_decay=args.epsilon_decay,
-        batch_size=args.batch_size,
-        learning_starts=args.learning_starts,
-        target_update_mode=args.target_update_mode,
-        target_update_freq=args.target_update_freq,
-        polyak_tau=args.polyak_tau,
-        use_dueling=args.dueling,
-        use_double_dqn=True,
-        use_prioritized=args.prioritized,
-    )
+    # Create agent based on approach
+    if args.approach == 'jepa':
+        agent = JEPAAgent(
+            state_dim=config.STATE_DIM,
+            action_dim=config.ACTION_DIM,
+        )
+        print("Using JEPA (self-supervised world model + CEM planning)")
+        print(f"  Warmup steps: {config.JEPA_WARMUP_STEPS} (random exploration)")
+        print(f"  Planning horizon: {config.JEPA_PLANNING_HORIZON}")
+        print(f"  Latent dim: {config.JEPA_LATENT_DIM}")
+        print()
+    else:
+        agent = DQNAgent(
+            state_dim=config.STATE_DIM,
+            action_dim=config.ACTION_DIM,
+            lr=args.lr,
+            gamma=args.gamma,
+            epsilon=args.epsilon,
+            epsilon_min=args.epsilon_min,
+            epsilon_decay=args.epsilon_decay,
+            batch_size=args.batch_size,
+            learning_starts=args.learning_starts,
+            target_update_mode=args.target_update_mode,
+            target_update_freq=args.target_update_freq,
+            polyak_tau=args.polyak_tau,
+            use_dueling=args.dueling,
+            use_double_dqn=True,
+            use_prioritized=args.prioritized,
+        )
     
     # Load model if specified
     if args.load and os.path.exists(args.load):
@@ -398,14 +415,20 @@ def test_agent(args):
     env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
     
     # Create and load agent
-    agent = DQNAgent(
-        state_dim=config.STATE_DIM,
-        action_dim=config.ACTION_DIM,
-        lr=args.lr,
-        gamma=args.gamma,
-        epsilon=0.0,  # No exploration during testing
-        batch_size=args.batch_size
-    )
+    if args.approach == 'jepa':
+        agent = JEPAAgent(
+            state_dim=config.STATE_DIM,
+            action_dim=config.ACTION_DIM,
+        )
+    else:
+        agent = DQNAgent(
+            state_dim=config.STATE_DIM,
+            action_dim=config.ACTION_DIM,
+            lr=args.lr,
+            gamma=args.gamma,
+            epsilon=0.0,  # No exploration during testing
+            batch_size=args.batch_size
+        )
     
     # Load model
     if args.load and os.path.exists(args.load):

@@ -89,6 +89,42 @@ class Config:
     REWARD_PROGRESS = 25.0  # Reward per fractional progress made
     
     # =====================
+    # Approach Selection
+    # =====================
+    DEFAULT_APPROACH = "dqn"  # Options: "dqn", "jepa"
+    
+    # =====================
+    # JEPA Settings (Joint Embedding Predictive Architecture)
+    # =====================
+    # World Model
+    JEPA_LATENT_DIM = 64         # Dimension of latent representation z
+    JEPA_HIDDEN_DIM = 128        # Hidden layer size for encoder/predictor
+    JEPA_ENCODER_LR = 0.0003     # Learning rate for encoder + predictor
+    JEPA_PREDICTOR_LR = 0.0003   # Learning rate for predictor head
+    
+    # EMA Target Encoder (provides stable targets, prevents collapse)
+    JEPA_EMA_TAU = 0.005         # EMA interpolation rate (slow-moving target)
+    
+    # VICReg Regularization (Variance-Invariance-Covariance, prevents collapse)
+    JEPA_VICREG_LAMBDA = 25.0    # Variance term coefficient
+    JEPA_VICREG_MU = 25.0        # Invariance (prediction) term coefficient
+    JEPA_VICREG_NU = 1.0         # Covariance term coefficient
+    
+    # Planning (CEM - Cross-Entropy Method)
+    JEPA_PLANNING_HORIZON = 10   # Steps to plan ahead
+    JEPA_CEM_CANDIDATES = 64     # Random action sequences to evaluate per iteration
+    JEPA_CEM_ELITES = 10         # Top-k sequences kept each iteration
+    JEPA_CEM_ITERATIONS = 3      # CEM refinement iterations
+    
+    # Training
+    JEPA_WARMUP_STEPS = 2000     # Random exploration before planning starts
+    JEPA_BATCH_SIZE = 128        # Batch size for world model training
+    JEPA_MEMORY_SIZE = 50000     # Transition buffer capacity
+    JEPA_GOAL_BUFFER_SIZE = 1000       # Store "good" latent states as planning goals
+    JEPA_GOAL_PROGRESS_THRESHOLD = 0.3 # Min track progress to count as "good" state
+    JEPA_TRAIN_FREQ = 4          # Train world model every N env steps
+    
+    # =====================
     # Action Mapping
     # =====================
     ACTIONS = {

@@ -20,6 +20,7 @@ import torch
 from game.track import Track
 from rl.agent import DQNAgent, RandomAgent
 from rl.environment import RacingEnv, MultiTrackEnv
+from jepa.agent import JEPAAgent
 from utils.config import config
 
 
@@ -51,6 +52,9 @@ def parse_args():
                         help='Random seed for reproducible runs')
     parser.add_argument('--deterministic', action='store_true',
                         help='Use deterministic torch algorithms where available')
+    parser.add_argument('--approach', type=str, default=config.DEFAULT_APPROACH,
+                        choices=['dqn', 'jepa'],
+                        help='Learning approach: dqn or jepa')
     
     return parser.parse_args()
 
@@ -249,11 +253,17 @@ def compare_agents(args):
     # Test trained agent
     trained_result = None
     if args.model and os.path.exists(args.model):
-        trained_agent = DQNAgent(
-            state_dim=config.STATE_DIM,
-            action_dim=config.ACTION_DIM,
-            epsilon=0.0  # No exploration
-        )
+        if args.approach == 'jepa':
+            trained_agent = JEPAAgent(
+                state_dim=config.STATE_DIM,
+                action_dim=config.ACTION_DIM,
+            )
+        else:
+            trained_agent = DQNAgent(
+                state_dim=config.STATE_DIM,
+                action_dim=config.ACTION_DIM,
+                epsilon=0.0  # No exploration
+            )
         trained_agent.load(args.model)
         trained_result = test_agent(
             trained_agent, env, args.episodes,
@@ -315,11 +325,17 @@ def test_multi_track(args):
     
     # Create and load agent
     if args.model and os.path.exists(args.model):
-        agent = DQNAgent(
-            state_dim=config.STATE_DIM,
-            action_dim=config.ACTION_DIM,
-            epsilon=0.0
-        )
+        if args.approach == 'jepa':
+            agent = JEPAAgent(
+                state_dim=config.STATE_DIM,
+                action_dim=config.ACTION_DIM,
+            )
+        else:
+            agent = DQNAgent(
+                state_dim=config.STATE_DIM,
+                action_dim=config.ACTION_DIM,
+                epsilon=0.0
+            )
         agent.load(args.model)
     else:
         print("No model specified. Using random agent.")
@@ -398,13 +414,19 @@ def main():
         env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
         
         if args.model and os.path.exists(args.model):
-            agent = DQNAgent(
-                state_dim=config.STATE_DIM,
-                action_dim=config.ACTION_DIM,
-                epsilon=0.0
-            )
+            if args.approach == 'jepa':
+                agent = JEPAAgent(
+                    state_dim=config.STATE_DIM,
+                    action_dim=config.ACTION_DIM,
+                )
+            else:
+                agent = DQNAgent(
+                    state_dim=config.STATE_DIM,
+                    action_dim=config.ACTION_DIM,
+                    epsilon=0.0
+                )
             agent.load(args.model)
-            name = "Trained Agent"
+            name = f"Trained Agent ({args.approach.upper()})"
         else:
             agent = RandomAgent(config.ACTION_DIM)
             name = "Random Agent"
