@@ -1,12 +1,15 @@
 # PyRacer — 2D Reinforcement Learning Racing Game
 
 An educational project where an AI agent learns to drive on procedurally generated
-tracks using PyTorch. It implements **two contrasting learning paradigms** so you can
+tracks using PyTorch. It implements **three contrasting learning paradigms** so you can
 compare them directly:
 
 - **DQN (reinforcement learning)** — learns from a reward signal (Double / Dueling DQN).
 - **JEPA (self-supervised world model)** — learns the *dynamics* of the world and
   plans through them with CEM. **No reward function needed.**
+- **Evolution (neuroevolution)** — evolves a *population* of policy networks with a
+  genetic algorithm. **No gradients, no backprop** — just score each policy by driving
+  and breed the fittest.
 
 The goal is clarity: the code is heavily commented to teach the concepts, not to ship a game.
 
@@ -38,8 +41,13 @@ python train.py --episodes 1000 --render         # watch it learn
 # Train JEPA (self-supervised, no rewards)
 python train.py --approach jepa --episodes 1000
 
+# Train Evolution (neuroevolution, gradient-free)
+python train.py --approach evo --generations 100
+python train.py --approach evo --generations 100 --pop-size 50 --render   # watch it evolve
+
 # Test a saved model (models are timestamped, e.g. best_model_20240101_120000.pth)
 python test.py --model saved_models/best_model_<timestamp>.pth --episodes 10 --render
+python test.py --approach evo --model saved_models/best_model_<timestamp>.pth --episodes 10 --render
 
 # Compare DQN vs JEPA side by side (with plots)
 python compare.py --episodes 500
@@ -66,7 +74,10 @@ Run any entry point with `-h` for the full flag list.
 | 3 | 0.3  | 0.0  | Coast straight |
 | 4 | -1.0 | 0.0  | Brake hard |
 
-### Reward (DQN only)
+### Reward (DQN + Evolution)
+
+DQN learns from this signal directly; Evolution uses the per-episode **sum** of it as
+each policy's fitness. JEPA ignores it entirely.
 
 | Event | Reward |
 |-------|--------|
@@ -76,14 +87,16 @@ Run any entry point with `-h` for the full flag list.
 | Collision | -50 (ends episode) |
 | Per step | -0.01 (encourages speed) |
 
-### DQN vs JEPA
+### DQN vs JEPA vs Evolution
 
-| | DQN | JEPA |
-|---|-----|------|
-| Learning signal | Reward from environment | Self-supervised prediction |
-| What it learns | Q-values (expected return) | World dynamics in latent space |
-| Action selection | ε-greedy on Q-values | CEM planning through the world model |
-| Goal | Maximize cumulative reward | Reach high-progress latent states |
+| | DQN | JEPA | Evolution |
+|---|-----|------|-----------|
+| Learning signal | Reward from environment | Self-supervised prediction | Episodic fitness (return) |
+| Optimizer | Adam (backprop) | Adam (backprop) | Selection + mutation (no gradients) |
+| What it learns | Q-values (expected return) | World dynamics in latent space | A population of policy weights |
+| Memory | Replay buffer | Transition buffer | Population of genomes |
+| Action selection | ε-greedy on Q-values | CEM planning through the world model | argmax of the policy network |
+| Goal | Maximize cumulative reward | Reach high-progress latent states | Breed policies that drive farthest |
 
 **DQN** stores transitions in a replay buffer and minimizes the Huber loss between the
 predicted Q-value and `reward + γ·Q_target(next, argmax Q_policy(next))` (Double DQN).
@@ -94,21 +107,30 @@ predicted Q-value and `reward + γ·Q_target(next, argmax Q_policy(next))` (Doub
 selects actions by planning (Cross-Entropy Method) toward "good" latent states it has
 seen — no reward signal involved.
 
+**Evolution** keeps a *population* of policy networks. Each generation it scores every
+policy by driving (fitness = episode return), then builds the next generation with
+**elitism** (keep the best), **tournament selection** (pick parents), **uniform
+crossover** (mix two parents), and **Gaussian mutation** (perturb the weights). There is
+no backprop, no replay buffer, and no per-step update — a black-box optimizer that needs
+only a scalar score per policy. It trains by *generations*, not episodes
+(`--generations`, `--pop-size`, `--eval-episodes`).
+
 ---
 
 ## Project layout
 
 ```
-game/    Car physics, procedural track (Catmull-Rom splines), raycasting, reward logic
-rl/      DQN/Dueling/Conv models, DQN agent, replay buffers, Gym-like environment
-jepa/    Encoder + predictor world model, VICReg loss, CEM planner, transition/goal buffers
-utils/   config.py — every hyperparameter lives here
+game/      Car physics, procedural track (Catmull-Rom splines), raycasting, reward logic
+rl/        DQN/Dueling/Conv models, DQN agent, replay buffers, Gym-like environment
+jepa/      Encoder + predictor world model, VICReg loss, CEM planner, transition/goal buffers
+evolution/ Gradient-free policy net, genetic-algorithm population, neuroevolution agent
+utils/     config.py — every hyperparameter lives here
 main.py  train.py  test.py  compare.py   verify.py
-tests/   pytest suite (run: python -m pytest -q)
+tests/     pytest suite (run: python -m pytest -q)
 ```
 
-All hyperparameters (display, physics, sensors, DQN, JEPA, rewards) are centralized in
-**`utils/config.py`** — start there to tweak anything.
+All hyperparameters (display, physics, sensors, DQN, JEPA, evolution, rewards) are
+centralized in **`utils/config.py`** — start there to tweak anything.
 
 ---
 
@@ -135,15 +157,16 @@ python -m pytest -q
 ```
 
 The suite covers config invariants, the replay buffers, model output shapes, the
-environment's `reset`/`step` contract, and the DQN agent update loop. Tests run
-headless (no display required).
+environment's `reset`/`step` contract, the DQN agent update loop, and the
+neuroevolution policy/population/agent. Tests run headless (no display required).
 
 ---
 
 ## Ideas to extend
 
 PPO/SAC, prioritized replay tuning, LSTM/temporal state, curiosity-driven exploration,
-CNN state from rendered frames, curriculum learning, opponents and obstacles.
+CNN state from rendered frames, curriculum learning, opponents and obstacles. For the
+evolution path: CMA-ES, novelty search, or parallel fitness evaluation.
 
 ## License & references
 
@@ -153,6 +176,7 @@ Educational use — modify and share freely.
 - Double DQN — [van Hasselt et al., 2016](https://arxiv.org/abs/1509.06461)
 - Dueling DQN — [Wang et al., 2016](https://arxiv.org/abs/1511.06581)
 - JEPA / VICReg — [LeCun, 2022](https://openreview.net/forum?id=BZ5a1r-kVsf) · [Bardes et al., 2022](https://arxiv.org/abs/2105.04906)
+- Neuroevolution / Evolution Strategies — [Salimans et al., 2017](https://arxiv.org/abs/1703.03864) · [Such et al., 2017](https://arxiv.org/abs/1712.06567)
 
 Built with PyGame (rendering), PyTorch (learning), NumPy (math).
 For contributor/agent notes see [AGENTS.md](AGENTS.md).

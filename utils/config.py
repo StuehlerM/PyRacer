@@ -13,6 +13,10 @@ class Config:
     SCREEN_HEIGHT = 800
     FPS = 60
     TITLE = "PyRacer - RL Racing Game"
+    # Episode ends if the car leaves the screen by more than this margin (pixels).
+    # Wall-segment collision only fires near a boundary, so this catches a car that
+    # escapes the track entirely and would otherwise run until MAX_STEPS_PER_EPISODE.
+    OOB_MARGIN = 100
     
     # =====================
     # Track Settings
@@ -103,8 +107,8 @@ class Config:
     # =====================
     # Approach Selection
     # =====================
-    # Default approach picks classic reward-driven DQN unless caller asks for world-model variant.
-    DEFAULT_APPROACH = "dqn"  # Options: "dqn", "jepa"
+    # Default approach picks classic reward-driven DQN unless caller asks for an alternative.
+    DEFAULT_APPROACH = "dqn"  # Options: "dqn", "jepa", "evo"
     
     # =====================
     # JEPA Settings (Joint Embedding Predictive Architecture)
@@ -137,6 +141,23 @@ class Config:
     JEPA_GOAL_BUFFER_SIZE = 1000       # Store "good" latent states as planning goals
     JEPA_GOAL_PROGRESS_THRESHOLD = 0.3 # Min track progress to count as "good" state
     JEPA_TRAIN_FREQ = 4          # Train world model every N env steps
+    
+    # =====================
+    # Evolution Settings (Neuroevolution / Genetic Algorithm)
+    # =====================
+    # Evolution is a third, gradient-free path: instead of backprop on a loss, keep a
+    # POPULATION of policy networks and let the fittest reproduce. No reward bootstrap,
+    # no replay buffer, no target network — just "score each policy, breed the winners".
+    EVO_HIDDEN_DIM = 64          # Hidden width of each policy network (kept small: every weight is a gene)
+    EVO_POP_SIZE = 50            # Policies evaluated per generation
+    EVO_GENERATIONS = 100        # Default number of generations to evolve
+    EVO_ELITE_FRAC = 0.2         # Fraction of top policies carried over unchanged (elitism)
+    EVO_TOURNAMENT_SIZE = 3      # Candidates per tournament when selecting parents
+    EVO_CROSSOVER_RATE = 0.5     # Probability of recombining two parents vs. cloning one
+    EVO_MUTATION_STD = 0.1       # Initial std of Gaussian weight mutations
+    EVO_MUTATION_DECAY = 0.999   # Per-generation multiplier that anneals mutation std
+    EVO_INIT_STD = 0.5           # Std of the initial random policy weights
+    EVO_EVAL_EPISODES = 1        # Episodes averaged to score one policy's fitness
     
     # =====================
     # Action Mapping

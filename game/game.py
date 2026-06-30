@@ -148,6 +148,14 @@ class Game:
         # Cache once per frame because collision/progress are reused by reward, HUD, and next state.
         # Check collision (expensive - iterates through all segments)
         is_colliding, collision_info = self.car.check_collision(self.track)
+
+        # Wall-segment collision only fires when the car is near a boundary. A car that
+        # leaves the playfield (e.g. an untrained policy driving straight off the track)
+        # never gets close to a wall again, so without this it would run until max_steps
+        # with no terminal signal. Treat going out of bounds as a crash.
+        if not is_colliding and self._is_out_of_bounds():
+            is_colliding = True
+            collision_info = {'collision': True, 'reason': 'out_of_bounds'}
         
         # Check checkpoint
         new_checkpoint_idx, is_finish = self.track.check_checkpoint(
@@ -285,6 +293,15 @@ class Game:
                 self.render(progress=current_progress, is_colliding=is_colliding)
         
         return state, reward, done, info
+
+    def _is_out_of_bounds(self):
+        """True if the car left the screen by more than config.OOB_MARGIN pixels."""
+        margin = config.OOB_MARGIN
+        x, y = self.car.position
+        return (
+            x < -margin or x > config.SCREEN_WIDTH + margin or
+            y < -margin or y > config.SCREEN_HEIGHT + margin
+        )
     
     def _get_state(self, sensor_readings=None, progress=None, skip_sensors=False):
         """
@@ -367,27 +384,43 @@ class Game:
         """
         if self.headless or self.screen is None:
             return
-        
-        # Clear screen
-        self.screen.fill(config.Colors.BLACK)
-        
-        # Draw track
-        self.track.draw(self.screen)
-        
-        # Draw car
-        self.car.draw(self.screen)
-        
-        # Optionally draw sensors (press 's' to toggle) - only in learning mode
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_s] and self.learning_mode:
-            self.car.draw_sensors(self.screen)
-        
-        # Draw HUD with cached values
-        self._draw_hud(progress=progress, is_colliding=is_colliding)
-        
-        # Update display
-        pygame.display.flip()
-        
+
+        # Pump the OS event queue every frame. Without this the training window
+        # (e.g. `train.py --render`) is never serviced, so Windows marks it
+        # "Not Responding" and the process can crash. Closing the window stops
+        # rendering cleanly instead of raising on the next draw/flip.
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+                self.close()
+                self.headless = True
+                return
+
+        try:
+            # Clear screen
+            self.screen.fill(config.Colors.BLACK)
+
+            # Draw track
+            self.track.draw(self.screen)
+
+            # Draw car
+            self.car.draw(self.screen)
+
+            # Optionally draw sensors (press 's' to toggle) - only in learning mode
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_s] and self.learning_mode:
+                self.car.draw_sensors(self.screen)
+
+            # Draw HUD with cached values
+            self._draw_hud(progress=progress, is_colliding=is_colliding)
+
+            # Update display
+            pygame.display.flip()
+        except pygame.error:
+            # Display was closed/lost mid-render; stop rendering rather than crash training.
+            self.headless = True
+            return
+
         self.frame_count += 1
     
     def _draw_hud(self, progress=None, is_colliding=False):

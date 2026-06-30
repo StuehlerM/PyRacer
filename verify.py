@@ -58,6 +58,14 @@ def verify_project_files():
         'rl/memory.py',
         'rl/environment.py',
         'rl/__init__.py',
+        'jepa/agent.py',
+        'jepa/model.py',
+        'jepa/memory.py',
+        'jepa/__init__.py',
+        'evolution/agent.py',
+        'evolution/model.py',
+        'evolution/population.py',
+        'evolution/__init__.py',
         'utils/config.py',
         'utils/__init__.py',
         'main.py',
@@ -102,6 +110,11 @@ def verify_game_components():
         # Test memory
         from rl.memory import ReplayBuffer
         print("  Replay buffer: [OK]")
+        
+        # Test evolution (neuroevolution, no pygame dependency)
+        from evolution.model import PolicyNetwork
+        from evolution.population import Population
+        print("  Evolution (neuroevolution): [OK]")
         
         return True
         

@@ -21,6 +21,7 @@ from game.track import Track
 from rl.agent import DQNAgent, RandomAgent
 from rl.environment import RacingEnv, MultiTrackEnv
 from jepa.agent import JEPAAgent
+from evolution.agent import EvolutionAgent
 from utils.config import config
 
 
@@ -53,8 +54,8 @@ def parse_args():
     parser.add_argument('--deterministic', action='store_true',
                         help='Use deterministic torch algorithms where available')
     parser.add_argument('--approach', type=str, default=config.DEFAULT_APPROACH,
-                        choices=['dqn', 'jepa'],
-                        help='Learning approach: dqn or jepa')
+                        choices=['dqn', 'jepa', 'evo'],
+                        help='Learning approach: dqn, jepa, or evo')
     
     return parser.parse_args()
 
@@ -260,6 +261,11 @@ def compare_agents(args):
                 state_dim=config.STATE_DIM,
                 action_dim=config.ACTION_DIM,
             )
+        elif args.approach == 'evo':
+            trained_agent = EvolutionAgent(
+                state_dim=config.STATE_DIM,
+                action_dim=config.ACTION_DIM,
+            )
         else:
             trained_agent = DQNAgent(
                 state_dim=config.STATE_DIM,
@@ -329,6 +335,11 @@ def test_multi_track(args):
     if args.model and os.path.exists(args.model):
         if args.approach == 'jepa':
             agent = JEPAAgent(
+                state_dim=config.STATE_DIM,
+                action_dim=config.ACTION_DIM,
+            )
+        elif args.approach == 'evo':
+            agent = EvolutionAgent(
                 state_dim=config.STATE_DIM,
                 action_dim=config.ACTION_DIM,
             )
@@ -418,6 +429,11 @@ def main():
         if args.model and os.path.exists(args.model):
             if args.approach == 'jepa':
                 agent = JEPAAgent(
+                    state_dim=config.STATE_DIM,
+                    action_dim=config.ACTION_DIM,
+                )
+            elif args.approach == 'evo':
+                agent = EvolutionAgent(
                     state_dim=config.STATE_DIM,
                     action_dim=config.ACTION_DIM,
                 )

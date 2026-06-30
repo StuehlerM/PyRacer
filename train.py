@@ -26,6 +26,7 @@ from game.track import Track
 from rl.agent import DQNAgent, RandomAgent
 from rl.environment import RacingEnv, MultiTrackEnv
 from jepa.agent import JEPAAgent
+from evolution.agent import EvolutionAgent
 from utils.config import config
 
 
@@ -89,8 +90,27 @@ def parse_args():
     parser.add_argument('--test-episodes', type=int, default=10,
                         help='Number of test episodes')
     parser.add_argument('--approach', type=str, default=config.DEFAULT_APPROACH,
-                        choices=['dqn', 'jepa'],
-                        help='Learning approach: dqn (reward-based RL) or jepa (self-supervised world model)')
+                        choices=['dqn', 'jepa', 'evo'],
+                        help='Learning approach: dqn (reward-based RL), jepa (self-supervised world model), or evo (neuroevolution)')
+    
+    # --- Evolution (neuroevolution) options ---
+    evo = parser.add_argument_group('evolution (--approach evo)')
+    evo.add_argument('--generations', type=int, default=config.EVO_GENERATIONS,
+                     help='Number of generations to evolve (evolution only)')
+    evo.add_argument('--pop-size', type=int, default=config.EVO_POP_SIZE,
+                     help='Population size: policies per generation (evolution only)')
+    evo.add_argument('--eval-episodes', type=int, default=config.EVO_EVAL_EPISODES,
+                     help='Episodes averaged to score one policy (evolution only)')
+    evo.add_argument('--evo-hidden-dim', type=int, default=config.EVO_HIDDEN_DIM,
+                     help='Hidden width of each evolved policy network (evolution only)')
+    evo.add_argument('--mutation-std', type=float, default=config.EVO_MUTATION_STD,
+                     help='Initial Gaussian mutation std (evolution only)')
+    evo.add_argument('--elite-frac', type=float, default=config.EVO_ELITE_FRAC,
+                     help='Fraction of top policies carried over unchanged (evolution only)')
+    evo.add_argument('--tournament-size', type=int, default=config.EVO_TOURNAMENT_SIZE,
+                     help='Candidates per selection tournament (evolution only)')
+    evo.add_argument('--crossover-rate', type=float, default=config.EVO_CROSSOVER_RATE,
+                     help='Probability of crossover vs cloning a parent (evolution only)')
     
     return parser.parse_args()
 
@@ -221,6 +241,11 @@ def train_agent(args):
     Args:
         args: argparse.Namespace - command line arguments
     """
+    # Neuroevolution has a fundamentally different (generational) training loop,
+    # so it gets its own routine rather than the per-step interaction loop below.
+    if args.approach == 'evo':
+        return train_evolution(args)
+    
     print("Starting training...")
     print(f"Approach: {args.approach.upper()}")
     print(f"Episodes: {args.episodes}")
@@ -403,6 +428,202 @@ def train_agent(args):
     return best_lap_time
 
 
+def _evaluate_genome(env, agent, genome, episodes, render=False):
+    """
+    Score one genome (policy) by letting it drive for a few episodes.
+
+    Fitness is the mean episode return — the same "drive far and fast" objective
+    DQN optimizes, but here it is just a black-box score handed to the genetic
+    algorithm. No gradients flow; the policy weights came straight from the genome.
+
+    Args:
+        env: Racing environment.
+        agent: EvolutionAgent (its policy is set to this genome).
+        genome: Flat weight vector to evaluate.
+        episodes: Episodes to average over.
+        render: Whether to render during evaluation.
+
+    Returns:
+        dict with mean fitness, lap stats and max progress.
+    """
+    agent.set_active_genome(genome)
+
+    returns = []
+    laps_completed = 0
+    best_lap_time = float('inf')
+    max_progress = 0.0
+
+    for _ in range(episodes):
+        state = env.reset()
+        episode_reward = 0.0
+        done = False
+        while not done:
+            action = agent.select_action(state, explore=False)
+            state, reward, done, info = env.step(action)
+            episode_reward += reward
+            agent.on_env_step()
+
+            max_progress = max(max_progress, info.get('progress', 0))
+            if info.get('lap_completed', False):
+                laps_completed += 1
+                lap_time = info.get('lap_time', 0)
+                if 0 < lap_time < best_lap_time:
+                    best_lap_time = lap_time
+
+            if render:
+                env.render()
+        returns.append(episode_reward)
+
+    return {
+        'fitness': float(np.mean(returns)) if returns else 0.0,
+        'laps_completed': laps_completed,
+        'best_lap_time': best_lap_time,
+        'max_progress': max_progress,
+    }
+
+
+def train_evolution(args):
+    """
+    Train a policy with neuroevolution (a genetic algorithm).
+
+    Unlike DQN/JEPA, there is no per-step gradient update. Each generation we
+    score every policy in the population by driving, then breed the fittest into
+    the next generation (elitism + tournament selection + crossover + mutation).
+
+    Args:
+        args: argparse.Namespace - command line arguments
+    """
+    print("Starting training...")
+    print(f"Approach: EVO (neuroevolution / genetic algorithm)")
+    print(f"Generations: {args.generations}")
+    print(f"Population size: {args.pop_size}")
+    print(f"Episodes per policy: {args.eval_episodes}")
+    print(f"Render: {args.render}")
+    print(f"Multi-track: {args.multi_track}")
+    print()
+
+    logger = TrainingLogger(args.log_dir, args.save_dir)
+    logger.save_config(args)
+
+    # Same environment options as the RL path, so comparisons stay fair.
+    if args.multi_track:
+        env = MultiTrackEnv(
+            num_tracks=args.num_tracks,
+            render=args.render,
+            render_every_n=args.render_every_n,
+            seed=args.seed,
+        )
+    else:
+        track = Track(seed=args.seed) if args.seed is not None else None
+        env = RacingEnv(track=track, render=args.render, render_every_n=args.render_every_n)
+
+    agent = EvolutionAgent(
+        state_dim=config.STATE_DIM,
+        action_dim=config.ACTION_DIM,
+        hidden_dim=args.evo_hidden_dim,
+        pop_size=args.pop_size,
+        elite_frac=args.elite_frac,
+        mutation_std=args.mutation_std,
+        tournament_size=args.tournament_size,
+        crossover_rate=args.crossover_rate,
+        seed=args.seed,
+    )
+    print(f"Using neuroevolution (gradient-free, {agent.num_params} weights per policy)")
+    print(f"  Selection: tournament (size {args.tournament_size}) + {agent.population.num_elites} elites")
+    print(f"  Variation: uniform crossover (p={args.crossover_rate}) + Gaussian mutation (std={args.mutation_std})")
+    print()
+
+    # Optionally seed the population's best slot from a saved policy.
+    if args.load and os.path.exists(args.load):
+        print(f"Loading model from {args.load}...")
+        agent.load(args.load)
+        print("Model loaded!")
+
+    start_time = time.time()
+    best_lap_time = float('inf')
+    best_fitness_so_far = -float('inf')
+    generation = 0
+
+    try:
+        for generation in range(1, args.generations + 1):
+            genomes = agent.ask()
+
+            fitnesses = []
+            gen_laps = 0
+            gen_best_lap = float('inf')
+            gen_max_progress = 0.0
+
+            # Score every policy in the population.
+            for genome in genomes:
+                result = _evaluate_genome(
+                    env, agent, genome, args.eval_episodes, render=args.render
+                )
+                fitnesses.append(result['fitness'])
+                gen_laps += result['laps_completed']
+                gen_best_lap = min(gen_best_lap, result['best_lap_time'])
+                gen_max_progress = max(gen_max_progress, result['max_progress'])
+
+            if gen_best_lap < best_lap_time:
+                best_lap_time = gen_best_lap
+
+            # Breed the next generation from the fitnesses.
+            agent.tell(fitnesses)
+            agent.increment_episode()
+
+            gen_max_fitness = float(np.max(fitnesses))
+            gen_mean_fitness = float(np.mean(fitnesses))
+            stats = agent.get_stats()
+
+            # Save whenever we find a new all-time-best policy.
+            if agent.population.best_fitness > best_fitness_so_far:
+                best_fitness_so_far = agent.population.best_fitness
+                logger.save_model(agent, is_best=True)
+
+            # Reuse the CSV schema: generation plays the role of "episode",
+            # max/mean fitness map to total/avg reward, mutation std -> "epsilon".
+            logger.log_episode(
+                episode=generation,
+                total_reward=gen_max_fitness,
+                avg_reward=gen_mean_fitness,
+                lap_time=gen_best_lap if gen_best_lap != float('inf') else 0,
+                best_lap_time=best_lap_time,
+                epsilon=stats['mutation_std'],
+                loss=0.0,
+                steps=stats['env_steps'],
+                memory_size=args.pop_size,
+            )
+
+            if generation % args.log_freq == 0 or generation == 1:
+                lap_str = f"{best_lap_time:.2f}s" if best_lap_time != float('inf') else "N/A"
+                print(f"\rGen {generation:5d} | "
+                      f"Best fit: {agent.population.best_fitness:8.2f} | "
+                      f"Gen max: {gen_max_fitness:8.2f} | "
+                      f"Gen avg: {gen_mean_fitness:8.2f} | "
+                      f"Laps: {gen_laps:3d} | "
+                      f"Progress: {gen_max_progress*100:5.1f}% | "
+                      f"Best lap: {lap_str} | "
+                      f"MutStd: {stats['mutation_std']:.4f}",
+                      end='', flush=True)
+
+            if generation % args.save_freq == 0:
+                logger.save_model(agent, is_best=False)
+
+        logger.save_model(agent, is_best=False)
+
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user.")
+    finally:
+        env.close()
+        total_time = time.time() - start_time
+        logger.print_final_summary(
+            total_episodes=generation,
+            total_time=total_time,
+            best_lap_time=best_lap_time,
+        )
+
+    return best_lap_time
+
+
 def test_agent(args):
     """
     Test a trained agent.
@@ -423,6 +644,13 @@ def test_agent(args):
         agent = JEPAAgent(
             state_dim=config.STATE_DIM,
             action_dim=config.ACTION_DIM,
+        )
+    elif args.approach == 'evo':
+        agent = EvolutionAgent(
+            state_dim=config.STATE_DIM,
+            action_dim=config.ACTION_DIM,
+            hidden_dim=args.evo_hidden_dim,
+            seed=args.seed,
         )
     else:
         agent = DQNAgent(
