@@ -138,7 +138,7 @@ class Game:
         
         # Update car
         self.car.update(throttle, steering, config.DT)
-        
+
         # Increment lap time at the top - makes relationship to physics ticks clearer
         self.lap_time += config.DT
         
@@ -399,6 +399,18 @@ class Game:
         try:
             # Clear screen
             self.screen.fill(config.Colors.BLACK)
+
+            # Draw screen-edge race barrier: thick outer wall + thin inner shadow.
+            border_thick = 12
+            border_inner = 4
+            screen_rect = self.screen.get_rect()
+            pygame.draw.rect(self.screen, config.Colors.TRACK_BORDER, screen_rect, border_thick)
+            pygame.draw.rect(
+                self.screen,
+                config.Colors.DARK_GRAY,
+                screen_rect.inflate(-(border_thick * 2), -(border_thick * 2)),
+                border_inner,
+            )
 
             # Draw track
             self.track.draw(self.screen)

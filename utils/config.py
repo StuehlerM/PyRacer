@@ -38,9 +38,11 @@ class Config:
     CAR_ACCELERATION = 400.0  # Acceleration rate (pixels per second^2)
     CAR_BRAKING = 600.0  # Braking rate
     CAR_FRICTION = 50.0  # Friction coefficient
+    CAR_LATERAL_FRICTION = 8.0  # Side-slip damping (higher = less drift)
     CAR_STEERING_SPEED = 120.0  # Degrees per second
     CAR_MAX_STEERING_ANGLE = 30  # Maximum steering angle in degrees
     CAR_STEERING_RETURN_SPEED = 120.0  # Degrees per second for steering return to center
+    CAR_WHEELBASE = 24.0  # Distance between axles in pixels
     
     # =====================
     # Physics Settings

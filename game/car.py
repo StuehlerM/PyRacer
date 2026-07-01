@@ -39,9 +39,11 @@ class Car:
         self.acceleration = config.CAR_ACCELERATION
         self.braking = config.CAR_BRAKING
         self.friction = config.CAR_FRICTION
+        self.lateral_friction = config.CAR_LATERAL_FRICTION
         self.steering_speed = np.deg2rad(config.CAR_STEERING_SPEED)
         self.max_steering = np.deg2rad(config.CAR_MAX_STEERING_ANGLE)
         self.steering_return_speed = np.deg2rad(config.CAR_STEERING_RETURN_SPEED)
+        self.wheelbase = float(config.CAR_WHEELBASE)
         
         # For rendering
         self.color = config.Colors.CAR_COLOR
@@ -74,49 +76,80 @@ class Car:
             if abs(self.steering_angle) < 1e-4:
                 self.steering_angle = 0.0
         
-        # Apply throttle/brake with configurable acceleration curve
+        forward = np.array([np.cos(self.angle), np.sin(self.angle)])
+        right = np.array([-np.sin(self.angle), np.cos(self.angle)])
+        forward_speed = float(np.dot(self.velocity, forward))
+        lateral_speed = float(np.dot(self.velocity, right))
+
+        longitudinal_delta = 0.0
         if throttle > 0:
-            # Nonlinear curves fake engine/drag behavior without simulating full drivetrain physics.
-            curve_type = config.ACCELERATION_CURVE
-            if curve_type == "s_curve":
-                acceleration_amount = s_curve_acceleration(
-                    self.speed, self.max_speed, self.acceleration, throttle, dt
-                )
-            elif curve_type == "log_curve":
-                acceleration_amount = log_curve_acceleration(
-                    self.speed, self.max_speed, self.acceleration, throttle, dt
-                )
-            else:  # "linear" or default
-                acceleration_amount = throttle * self.acceleration * dt
-            self.speed += acceleration_amount
+            if forward_speed >= 0.0:
+                curve_type = config.ACCELERATION_CURVE
+                if curve_type == "s_curve":
+                    longitudinal_delta = s_curve_acceleration(
+                        forward_speed, self.max_speed, self.acceleration, throttle, dt
+                    )
+                elif curve_type == "log_curve":
+                    longitudinal_delta = log_curve_acceleration(
+                        forward_speed, self.max_speed, self.acceleration, throttle, dt
+                    )
+                else:
+                    longitudinal_delta = throttle * self.acceleration * dt
+            else:
+                longitudinal_delta = throttle * self.braking * dt
         elif throttle < 0:
-            # Brake or reverse
-            self.speed += throttle * self.braking * dt
-        
-        # Apply friction
-        if abs(self.speed) > 0:
-            self.speed -= np.sign(self.speed) * self.friction * dt
-            if abs(self.speed) < 0.001:
-                self.speed = 0
-        
-        # Clamp speed
-        self.speed = clamp(self.speed, -self.max_speed, self.max_speed)
-        
-        # Steering needs forward motion; below threshold we avoid sideways-looking pivot behavior.
-        if abs(self.speed) < 1.0:
-            # Just move in the current direction
-            direction = np.array([np.cos(self.angle), np.sin(self.angle)])
-            self.velocity = direction * self.speed
-        else:
-            # `effective_angle` is where wheels want velocity to go, not raw body heading alone.
-            effective_angle = self.angle + self.steering_angle
-            direction = np.array([np.cos(effective_angle), np.sin(effective_angle)])
-            self.velocity = direction * self.speed
-        
+            if forward_speed > 0.0:
+                longitudinal_delta = throttle * self.braking * dt
+            else:
+                longitudinal_delta = throttle * self.acceleration * 0.5 * dt
+
+        forward_speed += longitudinal_delta
+
+        # Rolling resistance: small continuous drag so coasting keeps momentum but settles naturally.
+        drag_step = self.friction * dt
+        if abs(forward_speed) > 0.0:
+            forward_speed -= np.sign(forward_speed) * min(abs(forward_speed), drag_step)
+            if abs(forward_speed) < 1e-3:
+                forward_speed = 0.0
+
+        # Tire grip damps sideways slip faster than forward motion.
+        lateral_decay = max(0.0, 1.0 - self.lateral_friction * dt)
+        lateral_speed *= lateral_decay
+
+        # Bicycle-model yaw: no in-place spinning; turn rate scales with forward speed.
+        if abs(forward_speed) > 0.5 and abs(self.steering_angle) > 1e-5:
+            yaw_rate = (forward_speed / self.wheelbase) * np.tan(self.steering_angle)
+            self.angle += yaw_rate * dt
+            self.angle = (self.angle + np.pi) % (2 * np.pi) - np.pi
+
+        forward = np.array([np.cos(self.angle), np.sin(self.angle)])
+        right = np.array([-np.sin(self.angle), np.cos(self.angle)])
+        self.velocity = forward * forward_speed + right * lateral_speed
+
+        velocity_norm = float(np.linalg.norm(self.velocity))
+        if velocity_norm > self.max_speed:
+            self.velocity *= self.max_speed / velocity_norm
+
         # Update position
         self.position += self.velocity * dt
-        self.angle = (self.angle + np.pi) % (2 * np.pi) - np.pi
-        
+
+        # Screen-edge walls: treat the frame border as hard physical walls.
+        # Clamp position and cancel the velocity component pointing into the wall
+        # so the car stops dead at the edge (no bouncing, no leaving the frame).
+        x, y = self.position
+        vx, vy = self.velocity
+        if x < 0:
+            x, vx = 0.0, max(vx, 0.0)
+        elif x > config.SCREEN_WIDTH:
+            x, vx = float(config.SCREEN_WIDTH), min(vx, 0.0)
+        if y < 0:
+            y, vy = 0.0, max(vy, 0.0)
+        elif y > config.SCREEN_HEIGHT:
+            y, vy = float(config.SCREEN_HEIGHT), min(vy, 0.0)
+        self.position[:] = [x, y]
+        self.velocity[:] = [vx, vy]
+        self.speed = float(np.linalg.norm(self.velocity))
+
         if hasattr(self, '_cached_nearby_position') and self._cached_nearby_position is not None:
             # Nearby-wall cache only matters locally; refresh after big move to avoid stale segments.
             if np.linalg.norm(self.position - self._cached_nearby_position) > 50:

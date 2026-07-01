@@ -286,6 +286,10 @@ class Track:
             # Calculate normal (perpendicular to tangent, pointing left)
             # Normal says "which way is road edge" relative to centerline travel direction.
             normal = np.array([-tangent[1], tangent[0]])
+            # Keep normal orientation continuous around loop; prevents local flips
+            # that swap inner/outer boundary points and create crossing artifacts.
+            if normals and float(np.dot(normal, normals[-1])) < 0.0:
+                normal = -normal
             normals.append(normal)
             miter_scales.append(miter_scale)
         
@@ -694,12 +698,6 @@ class Track:
         pygame.draw.rect(screen, colors.GRASS_COLOR, 
                         (0, 0, self.screen_width, self.screen_height))
         
-        # Draw control points (for debugging)
-        if hasattr(self, 'control_points') and self.control_points:
-            for cp in self.control_points:
-                pygame.draw.circle(screen, config.Colors.RED, 
-                                  (int(cp[0]), int(cp[1])), 5)
-        
         # Draw track surface as filled ring (outer polygon filled, inner cut with grass)
         if len(self.inner_boundary) >= 3 and len(self.outer_boundary) >= 3:
             # Fill outer boundary with road color
@@ -708,9 +706,67 @@ class Track:
             # Two fills fake polygon-with-hole, since pygame polygons do not support holes directly.
             pygame.draw.polygon(screen, colors.GRASS_COLOR, self.inner_boundary)
             
-            # Draw track boundaries (white lines) — closed=True for seamless loop
-            pygame.draw.lines(screen, colors.WHITE, True, self.inner_boundary, 3)
-            pygame.draw.lines(screen, colors.WHITE, True, self.outer_boundary, 3)
+            # Draw curb only on grass side of each boundary to avoid thick-line
+            # joins spilling triangular artifacts into road on sharp corners.
+            curb_width = 8
+            dash_len = 20
+            curb_colours = (colors.RED, colors.WHITE)
+            boundary_pairs = (
+                (self.inner_boundary, self.outer_boundary),
+                (self.outer_boundary, self.inner_boundary),
+            )
+            for boundary, opposite_boundary in boundary_pairs:
+                n = len(boundary)
+                accumulated = 0.0
+                colour_idx = 0
+                for i in range(n):
+                    p1 = np.array(boundary[i], dtype=float)
+                    p2 = np.array(boundary[(i + 1) % n], dtype=float)
+                    o1 = np.array(opposite_boundary[i], dtype=float)
+                    o2 = np.array(opposite_boundary[(i + 1) % n], dtype=float)
+                    seg = p2 - p1
+                    seg_len = float(np.linalg.norm(seg))
+                    if seg_len < 1e-6:
+                        continue
+
+                    pos = 0.0
+                    while pos < seg_len:
+                        remaining_in_dash = dash_len - accumulated
+                        chunk = min(remaining_in_dash, seg_len - pos)
+                        t0 = pos / seg_len
+                        t1 = (pos + chunk) / seg_len
+
+                        cp1 = p1 + seg * t0
+                        cp2 = p1 + seg * t1
+                        op1 = o1 + (o2 - o1) * t0
+                        op2 = o1 + (o2 - o1) * t1
+
+                        grass_dir1 = cp1 - op1
+                        grass_dir2 = cp2 - op2
+                        norm1 = float(np.linalg.norm(grass_dir1))
+                        norm2 = float(np.linalg.norm(grass_dir2))
+                        if norm1 < 1e-6 or norm2 < 1e-6:
+                            pos += chunk
+                            accumulated += chunk
+                            continue
+                        grass_dir1 /= norm1
+                        grass_dir2 /= norm2
+
+                        gp1 = cp1 + grass_dir1 * curb_width
+                        gp2 = cp2 + grass_dir2 * curb_width
+                        strip = (
+                            (int(cp1[0]), int(cp1[1])),
+                            (int(cp2[0]), int(cp2[1])),
+                            (int(gp2[0]), int(gp2[1])),
+                            (int(gp1[0]), int(gp1[1])),
+                        )
+                        pygame.draw.polygon(screen, curb_colours[colour_idx % 2], strip)
+
+                        accumulated += chunk
+                        pos += chunk
+                        if accumulated >= dash_len - 1e-6:
+                            accumulated = 0.0
+                            colour_idx += 1
         
         # Draw center line (dashed)
         for i in range(len(self.waypoints)):

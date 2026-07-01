@@ -13,9 +13,9 @@ COMPARISON TO DQN:
 ┌─────────────────────────────────────────────────────────────────┐
 │ DQN Training Loop:                                              │
 │   1. Observe state                                              │
-│   2. Pick action (ε-greedy on Q-values)                        │
+│   2. Pick action (ε-greedy on Q-values)                         │
 │   3. Get reward from environment                                │
-│   4. Update Q-values toward: reward + γ * max_Q(next_state)    │
+│   4. Update Q-values toward: reward + γ * max_Q(next_state)     │
 │                                                                 │
 │ JEPA Training Loop:                                             │
 │   1. Observe state                                              │
