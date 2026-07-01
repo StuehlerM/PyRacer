@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import glob
 import os
 import random
 import time
@@ -40,6 +41,8 @@ def parse_args():
                         help='Render the training (slower but visual)')
     parser.add_argument('--load', type=str, default=None,
                         help='Path to load model from')
+    parser.add_argument('--load-best', action='store_true',
+                        help='Load latest best model for the selected approach from save-dir')
     parser.add_argument('--save-dir', type=str, default='saved_models',
                         help='Directory to save models')
     parser.add_argument('--log-dir', type=str, default='logs',
@@ -112,7 +115,10 @@ def parse_args():
     evo.add_argument('--crossover-rate', type=float, default=config.EVO_CROSSOVER_RATE,
                      help='Probability of crossover vs cloning a parent (evolution only)')
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.load and args.load_best:
+        parser.error('--load and --load-best cannot be used together')
+    return args
 
 
 def set_seed(seed, deterministic=False):
@@ -128,6 +134,72 @@ def set_seed(seed, deterministic=False):
         torch.use_deterministic_algorithms(True, warn_only=True)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+
+
+def _best_model_timestamp(model_path):
+    """Extract timestamp portion from a best_model_<timestamp>.pth path."""
+    stem = os.path.splitext(os.path.basename(model_path))[0]
+    prefix = 'best_model_'
+    if not stem.startswith(prefix):
+        return ''
+    return stem[len(prefix):]
+
+
+def _run_config_path_for_model(model_path, log_dir):
+    """Return matching config_<timestamp>.json path for a best model."""
+    timestamp = _best_model_timestamp(model_path)
+    if not timestamp:
+        return None
+    return os.path.join(log_dir, f'config_{timestamp}.json')
+
+
+def _model_approach_from_run_config(model_path, log_dir):
+    """Read approach metadata saved beside the run logs."""
+    config_path = _run_config_path_for_model(model_path, log_dir)
+    if config_path is None or not os.path.exists(config_path):
+        return None
+
+    with open(config_path, 'r') as f:
+        run_config = json.load(f)
+    args = run_config.get('args', {})
+    return args.get('approach', config.DEFAULT_APPROACH)
+
+
+def find_latest_best_model(save_dir, log_dir, approach):
+    """Find newest best model whose saved run config matches approach."""
+    pattern = os.path.join(save_dir, 'best_model_*.pth')
+    candidates = sorted(
+        glob.glob(pattern),
+        key=lambda path: (_best_model_timestamp(path), os.path.getmtime(path)),
+        reverse=True,
+    )
+
+    for model_path in candidates:
+        if _model_approach_from_run_config(model_path, log_dir) == approach:
+            return model_path
+    return None
+
+
+def load_model_for_run(agent, args):
+    """Load explicit model path or latest best model requested by CLI args."""
+    if args.load_best:
+        load_path = find_latest_best_model(args.save_dir, args.log_dir, args.approach)
+        if load_path is None:
+            print(f"No previous best {args.approach.upper()} model found in {args.save_dir}; starting fresh.")
+            return None
+        print(f"Loading latest best {args.approach.upper()} model from {load_path}...")
+    elif args.load:
+        if not os.path.exists(args.load):
+            print(f"Model path not found: {args.load}. Starting fresh.")
+            return None
+        load_path = args.load
+        print(f"Loading model from {load_path}...")
+    else:
+        return None
+
+    agent.load(load_path)
+    print("Model loaded!")
+    return load_path
 
 
 class TrainingLogger:
@@ -307,11 +379,7 @@ def train_agent(args):
             use_prioritized=args.prioritized,
         )
     
-    # Load model if specified
-    if args.load and os.path.exists(args.load):
-        print(f"Loading model from {args.load}...")
-        agent.load(args.load)
-        print("Model loaded!")
+    load_model_for_run(agent, args)
     
     # RL training is episode-based: reset track, then learn from many env steps inside episode.
     start_time = time.time()
@@ -555,10 +623,7 @@ def train_evolution(args):
     print()
 
     # Optionally seed the population's best slot from a saved policy.
-    if args.load and os.path.exists(args.load):
-        print(f"Loading model from {args.load}...")
-        agent.load(args.load)
-        print("Model loaded!")
+    load_model_for_run(agent, args)
 
     start_time = time.time()
     best_lap_time = float('inf')
@@ -685,11 +750,7 @@ def test_agent(args):
         )
     
     # Load model
-    if args.load and os.path.exists(args.load):
-        print(f"Loading model from {args.load}...")
-        agent.load(args.load)
-        print("Model loaded!")
-    else:
+    if load_model_for_run(agent, args) is None:
         print("No model loaded. Testing with untrained agent.")
     
     # Evaluation loop measures learned behavior only, so action sampling stays greedy.

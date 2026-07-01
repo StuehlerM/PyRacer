@@ -142,6 +142,7 @@ class Track:
         # Cache for performance optimization
         self._cached_waypoints_array = None
         self._cached_segment_lengths = None
+        self._cached_cumulative_lengths = None
         self._cached_total_length = None
         self._cached_waypoints_count = 0
         
@@ -418,6 +419,7 @@ class Track:
             total_length += seg_len
         
         self._cached_segment_lengths = np.array(segment_lengths)
+        self._cached_cumulative_lengths = np.cumsum(self._cached_segment_lengths)
         self._cached_total_length = total_length
     
     def _build_spatial_grid(self):
@@ -673,6 +675,35 @@ class Track:
             return float(((checkpoint_distance - start_distance) % total_length) / total_length)
 
         return None
+
+    def get_direction_at_progress(self, progress):
+        """Return normalized centerline direction at fractional track progress."""
+        if (self._cached_waypoints_array is None or
+                self._cached_segment_lengths is None or
+                self._cached_cumulative_lengths is None or
+                self._cached_total_length is None):
+            self._cache_track_data()
+
+        if self._cached_total_length <= 0 or self._cached_waypoints_count == 0:
+            return np.array([1.0, 0.0], dtype=float)
+
+        progress = float(progress) % 1.0
+        start_distance = (
+            float(self._cached_cumulative_lengths[self.start_idx - 1])
+            if self.start_idx > 0 else 0.0
+        )
+        distance = (start_distance + progress * self._cached_total_length) % self._cached_total_length
+        segment_idx = int(np.searchsorted(self._cached_cumulative_lengths, distance, side='right'))
+        if segment_idx >= self._cached_waypoints_count:
+            segment_idx = 0
+
+        p1 = self._cached_waypoints_array[segment_idx]
+        p2 = self._cached_waypoints_array[(segment_idx + 1) % self._cached_waypoints_count]
+        direction = p2 - p1
+        norm = float(np.linalg.norm(direction))
+        if norm <= 1e-12:
+            return np.array([1.0, 0.0], dtype=float)
+        return direction / norm
 
     def _closest_progress_segment(self, position, indices):
         """Find closest center-line segment among candidate indices."""

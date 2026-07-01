@@ -35,6 +35,7 @@ python main.py
 
 # Train DQN (headless is fastest)
 python train.py --episodes 1000
+python train.py --episodes 1000 --load-best       # continue from latest best DQN
 python train.py --episodes 1000 --dueling        # Dueling DQN
 python train.py --episodes 1000 --render         # watch it learn
 
@@ -64,7 +65,7 @@ Run any entry point with `-h` for the full flag list.
 7 raycast sensors at `[-90°, -60°, -30°, 0°, 30°, 60°, 90°]` + car speed +
 `sin(heading)` + `cos(heading)` + track progress.
 
-### Actions (5 discrete)
+### Actions (4 discrete)
 
 | # | Throttle | Steering | Meaning |
 |---|----------|----------|---------|
@@ -72,7 +73,8 @@ Run any entry point with `-h` for the full flag list.
 | 1 | 0.8  | -0.8 | Accelerate + turn left |
 | 2 | 0.8  | 0.8  | Accelerate + turn right |
 | 3 | 0.3  | 0.0  | Coast straight |
-| 4 | -1.0 | 0.0  | Brake hard |
+
+Learned agents are forward-only; they do not get a reverse action.
 
 ### Reward (DQN + Evolution)
 
@@ -81,9 +83,11 @@ each policy's fitness. JEPA ignores it entirely.
 
 | Event | Reward |
 |-------|--------|
-| Lap complete | +200 (×1.5 on a new best lap) |
+| Step baseline | starts at 0 |
+| Lap complete | +200 (x1.5 on a new best lap) |
 | Checkpoint | +5 |
-| Progress | +25 × fraction of track gained |
+| Toward next checkpoint | +25 x normalized distance closed |
+| Forward track-aligned speed | up to +0.02 per step |
 | Collision | -50 (ends episode) |
 | Per step | -0.01 (encourages speed) |
 

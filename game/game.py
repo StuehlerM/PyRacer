@@ -75,7 +75,7 @@ class Game:
         
         # For RL
         self.prev_progress = self.track.get_progress(tuple(self.car.position))
-        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(self.prev_progress)
+        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(tuple(self.car.position))
         self.episode_forward_progress = 0.0
         self.steps_since_progress = 0
         self.steps_in_episode = 0
@@ -104,7 +104,7 @@ class Game:
         self.episode_reward = 0.0
         self.steps_in_episode = 0
         self.prev_progress = self.track.get_progress(tuple(self.car.position))
-        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(self.prev_progress)
+        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(tuple(self.car.position))
         self.episode_forward_progress = 0.0
         self.steps_since_progress = 0
         self._render_step_counter = 0
@@ -175,21 +175,23 @@ class Game:
             return_distance=True,
         )
         off_track = centerline_distance > (self.track.track_width * 0.5)
+        checkpoint_approach_reward = 0.0
+        forward_drive_reward = 0.0
         
         # If in human driving mode (learning_mode=False), skip all learning-related calculations
         if self.learning_mode:
-            # Reward shaping only cares about closing distance to the next ordered checkpoint.
+            # Closer to next ordered checkpoint => positive; farther away => negative.
             target_checkpoint_idx = self.last_checkpoint_idx + 1
             checkpoint_distance = self._distance_to_next_checkpoint(
-                current_progress,
+                tuple(self.car.position),
                 checkpoint_idx=target_checkpoint_idx,
             )
             raw_diff = self.prev_checkpoint_distance - checkpoint_distance
             if abs(raw_diff) > 0.5:
                 raw_diff = 0.0
-            progress_reward = raw_diff * config.REWARD_PROGRESS
+            checkpoint_approach_reward = raw_diff * config.REWARD_CHECKPOINT_APPROACH
             if raw_diff < 0.0:
-                progress_reward *= config.REWARD_WRONG_WAY_MULTIPLIER
+                checkpoint_approach_reward *= config.REWARD_WRONG_WAY_MULTIPLIER
             if raw_diff > config.MIN_PROGRESS_DELTA:
                 self.steps_since_progress = 0
             else:
@@ -197,10 +199,12 @@ class Game:
             if raw_diff > 0.0:
                 self.episode_forward_progress = min(1.0, self.episode_forward_progress + raw_diff)
             self.prev_progress = current_progress
+            forward_drive_reward = self._calculate_forward_drive_reward(current_progress)
             
             # RL reward is sum of small hints, not only sparse win/lose events.
-            reward = 0.0
-            reward += progress_reward
+            reward = config.REWARD_INITIAL
+            reward += checkpoint_approach_reward
+            reward += forward_drive_reward
             
             # Initialize done flag for this step
             done = False
@@ -233,7 +237,7 @@ class Game:
                     
                     reward += lap_reward
 
-                self.prev_checkpoint_distance = self._distance_to_next_checkpoint(current_progress)
+                self.prev_checkpoint_distance = self._distance_to_next_checkpoint(tuple(self.car.position))
             else:
                 self.prev_checkpoint_distance = checkpoint_distance
             
@@ -318,6 +322,8 @@ class Game:
             'steps_since_progress': self.steps_since_progress,
             'progress': current_progress,
             'checkpoint_distance': self.prev_checkpoint_distance,
+            'checkpoint_approach_reward': checkpoint_approach_reward,
+            'forward_drive_reward': forward_drive_reward,
             'forward_progress': self.episode_forward_progress,
             'lap_completed': is_finish,
             'new_best_lap': is_finish and new_best,
@@ -342,19 +348,41 @@ class Game:
             y < -margin or y > config.SCREEN_HEIGHT + margin
         )
 
-    def _distance_to_next_checkpoint(self, progress, checkpoint_idx=None):
-        """Forward progress distance from current progress to next ordered checkpoint."""
+    def _distance_to_next_checkpoint(self, position, checkpoint_idx=None):
+        """Normalized Euclidean distance from car position to next ordered checkpoint."""
         if checkpoint_idx is None:
             checkpoint_idx = self.last_checkpoint_idx + 1
 
-        target_progress = self.track.get_checkpoint_progress(checkpoint_idx)
-        if target_progress is None:
+        target_position = None
+        for checkpoint in self.track.checkpoints:
+            if checkpoint.get('index') == checkpoint_idx:
+                target_position = checkpoint.get('position')
+                break
+        if target_position is None:
             return 0.0
 
-        distance = target_progress - progress
-        if distance < 0.0:
-            distance += 1.0
-        return float(distance)
+        dx = float(target_position[0]) - float(position[0])
+        dy = float(target_position[1]) - float(position[1])
+        screen_diagonal = max(
+            float(np.hypot(config.SCREEN_WIDTH, config.SCREEN_HEIGHT)),
+            1e-6,
+        )
+        return float(np.hypot(dx, dy) / screen_diagonal)
+
+    def _calculate_forward_drive_reward(self, progress):
+        """Small positive reward for velocity aligned with track forward direction."""
+        track_forward = np.asarray(
+            self.track.get_direction_at_progress(progress),
+            dtype=float,
+        )
+        norm = float(np.linalg.norm(track_forward))
+        if norm <= 1e-12:
+            return 0.0
+
+        track_forward /= norm
+        forward_speed = max(0.0, float(np.dot(self.car.velocity, track_forward)))
+        max_speed = max(float(self.car.max_speed), 1e-6)
+        return (forward_speed / max_speed) * config.REWARD_FORWARD_SPEED
     
     def _get_state(self, sensor_readings=None, progress=None, skip_sensors=False):
         """

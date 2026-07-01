@@ -55,3 +55,34 @@ def test_episode_runs_to_termination(env):
         if done:
             break
     assert done
+
+
+def test_discrete_steering_actions_reach_car_physics(env):
+    steer_actions = {
+        "left": next(
+            action_id
+            for action_id, action in config.ACTIONS.items()
+            if action["steering"] < 0.0
+        ),
+        "right": next(
+            action_id
+            for action_id, action in config.ACTIONS.items()
+            if action["steering"] > 0.0
+        ),
+    }
+
+    for action_id, expected_sign in (
+        (steer_actions["left"], -1.0),
+        (steer_actions["right"], 1.0),
+    ):
+        env.reset()
+        initial_angle = env.game.car.angle
+
+        for _ in range(30):
+            _, _, done, _ = env.step(action_id)
+            if done:
+                break
+
+        angle_delta = (env.game.car.angle - initial_angle + np.pi) % (2 * np.pi) - np.pi
+        assert expected_sign * env.game.car.steering_angle > 0.0
+        assert expected_sign * angle_delta > 1e-3

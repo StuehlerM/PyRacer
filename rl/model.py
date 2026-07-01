@@ -344,7 +344,8 @@ def test_model():
     
     # Test DQN
     print("\n=== Testing DQN ===")
-    model = DQN(input_dim=10, output_dim=5, hidden_dim=64)
+    output_dim = DEFAULT_OUTPUT_DIM
+    model = DQN(input_dim=10, output_dim=output_dim, hidden_dim=64)
     assert model.device == device, f"Model device mismatch: {model.device} vs {device}"
     
     # Create a random input
@@ -358,38 +359,38 @@ def test_model():
     print(f"Output type: {type(output)}")
     print(f"Output device: {output.device}")
     
-    assert output.shape == (32, 5), f"Expected output shape (32, 5), got {output.shape}"
+    assert output.shape == (32, output_dim), f"Expected output shape (32, {output_dim}), got {output.shape}"
     assert output.device == device, f"Output device mismatch: {output.device} vs {device}"
     
     # Test act() method
     state = np.random.randn(10).astype(np.float32)
     action_greedy = model.act(state, epsilon=0.0)  # Always greedy
-    assert 0 <= action_greedy < 5, f"Action {action_greedy} out of range [0, 4]"
+    assert 0 <= action_greedy < output_dim, f"Action {action_greedy} out of range [0, {output_dim - 1}]"
     
     action_random = model.act(state, epsilon=1.0)  # Always random
-    assert 0 <= action_random < 5, f"Action {action_random} out of range [0, 4]"
+    assert 0 <= action_random < output_dim, f"Action {action_random} out of range [0, {output_dim - 1}]"
     
     print("DQN model test passed!")
     
     # Test Dueling DQN
     print("\n=== Testing DuelingDQN ===")
-    model = DuelingDQN(input_dim=10, output_dim=5, hidden_dim=64)
+    model = DuelingDQN(input_dim=10, output_dim=output_dim, hidden_dim=64)
     assert model.device == device, f"Model device mismatch: {model.device} vs {device}"
     
     output = model(x)
     print(f"Dueling DQN output shape: {output.shape}")
-    assert output.shape == (32, 5), f"Expected output shape (32, 5), got {output.shape}"
+    assert output.shape == (32, output_dim), f"Expected output shape (32, {output_dim}), got {output.shape}"
     assert output.device == device, f"Output device mismatch: {output.device} vs {device}"
     
     # Test act() method
     action = model.act(state, epsilon=0.0)
-    assert 0 <= action < 5, f"Action {action} out of range [0, 4]"
+    assert 0 <= action < output_dim, f"Action {action} out of range [0, {output_dim - 1}]"
     
     print("Dueling DQN test passed!")
     
     # Test ConvDQN
     print("\n=== Testing ConvDQN ===")
-    model = ConvDQN(input_channels=3, output_dim=5)
+    model = ConvDQN(input_channels=3, output_dim=output_dim)
     assert model.device == device, f"Model device mismatch: {model.device} vs {device}"
     
     # Test with different image sizes (thanks to adaptive pooling)
@@ -398,13 +399,13 @@ def test_model():
         x_img = torch.randn(batch_size, channels, height, width).to(device)
         output = model(x_img)
         print(f"  Input: {x_img.shape} -> Output: {output.shape}")
-        assert output.shape == (batch_size, 5), f"Expected shape ({batch_size}, 5), got {output.shape}"
+        assert output.shape == (batch_size, output_dim), f"Expected shape ({batch_size}, {output_dim}), got {output.shape}"
         assert output.device == device, f"Output device mismatch: {output.device} vs {device}"
     
     # Test ConvDQN act() method
     state_img = np.random.randn(3, 84, 84).astype(np.float32)
     action = model.act(state_img, epsilon=0.0)
-    assert 0 <= action < 5, f"Action {action} out of range [0, 4]"
+    assert 0 <= action < output_dim, f"Action {action} out of range [0, {output_dim - 1}]"
     
     print("ConvDQN test passed!")
     

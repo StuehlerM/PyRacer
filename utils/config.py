@@ -65,8 +65,8 @@ class Config:
     # Observation = sensor distances plus compact car state, enough to drive without raw image input.
     STATE_DIM = NUM_SENSORS + 4  # Sensors + speed + sin(angle) + cos(angle) + progress
     STATE_VERSION = 2  # Bump when state vector layout changes
-    # Five coarse actions keep control problem simple enough for DQN to learn from sparse rewards.
-    ACTION_DIM = 5  # Number of discrete actions
+    # Four forward-only actions keep control problem simple and prevent learned policies from reversing.
+    ACTION_DIM = 4  # Number of discrete actions
     HIDDEN_DIM = 128
     LEARNING_RATE = 0.001
     # Gamma near 1.0 values future lap progress almost as much as immediate reward.
@@ -100,12 +100,16 @@ class Config:
     # =====================
     # Reward Settings
     # =====================
+    # Each RL step starts neutral; shaping terms then add small hints or penalties.
+    REWARD_INITIAL = 0.0
     # Reward scale makes finishing lap worth much more than risky wall hits or tiny per-step shaping.
     REWARD_LAP_COMPLETE = 200.0
     REWARD_CHECKPOINT = 5.0
     REWARD_COLLISION = -50.0
     REWARD_TIME_PENALTY = -0.01  # Per step penalty to encourage speed
-    REWARD_PROGRESS = 25.0  # Reward per fractional progress made
+    REWARD_CHECKPOINT_APPROACH = 25.0  # Reward per normalized distance closed to next checkpoint
+    REWARD_PROGRESS = REWARD_CHECKPOINT_APPROACH  # Backward-compatible alias
+    REWARD_FORWARD_SPEED = 0.02  # Max per-step reward for full-speed track-aligned forward motion
     REWARD_WRONG_WAY_MULTIPLIER = 2.0  # Extra penalty multiplier when progress goes backwards
     REWARD_OFF_TRACK = -25.0  # Penalty applied when car center leaves road width
     OFF_TRACK_TERMINATES = True  # End episode immediately when car leaves track
@@ -171,13 +175,12 @@ class Config:
     # =====================
     # Action Mapping
     # =====================
-    # Action set favors common racing choices: go straight, turn under throttle, coast, and brake hard.
+    # Action set favors common racing choices while keeping learned policies forward-only.
     ACTIONS = {
         0: {'throttle': 1.0, 'steering': 0.0},      # Accelerate straight
         1: {'throttle': 0.8, 'steering': -0.8},    # Accelerate + turn left
         2: {'throttle': 0.8, 'steering': 0.8},     # Accelerate + turn right
         3: {'throttle': 0.3, 'steering': 0.0},     # Coast straight
-        4: {'throttle': -1.0, 'steering': 0.0},    # Brake hard
     }
     
     # =====================

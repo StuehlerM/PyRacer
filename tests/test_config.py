@@ -58,5 +58,5 @@ def test_stall_reward_settings_make_waiting_worse_than_crashing():
 
 def test_every_action_is_bounded():
     for spec in config.ACTIONS.values():
-        assert -1.0 <= spec["throttle"] <= 1.0
+        assert 0.0 <= spec["throttle"] <= 1.0
         assert -1.0 <= spec["steering"] <= 1.0

@@ -514,7 +514,13 @@ def test_agent():
     
     # Create agent
     state_dim = config.STATE_DIM
-    agent = DQNAgent(state_dim=state_dim, action_dim=5, batch_size=32, learning_starts=0)
+    action_dim = config.ACTION_DIM
+    agent = DQNAgent(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        batch_size=32,
+        learning_starts=0,
+    )
     
     # Test action selection
     state = np.random.randn(state_dim)
@@ -522,18 +528,18 @@ def test_agent():
     # Test exploration
     action = agent.select_action(state, explore=True)
     print(f"Selected action (explore=True): {action}")
-    assert 0 <= action < 5, "Invalid action"
+    assert 0 <= action < action_dim, "Invalid action"
     
     # Test exploitation (epsilon=0)
     agent.epsilon = 0.0
     action = agent.select_action(state, explore=True)
     print(f"Selected action (epsilon=0): {action}")
-    assert 0 <= action < 5, "Invalid action"
+    assert 0 <= action < action_dim, "Invalid action"
     
     # Test non-explore mode always returns greedy action
     greedy_action = agent.select_action(state, explore=False)
     print(f"Selected action (explore=False): {greedy_action}")
-    assert 0 <= greedy_action < 5, "Invalid action"
+    assert 0 <= greedy_action < action_dim, "Invalid action"
     
     # Test memory
     agent.remember(state, action, 1.0, state, False)
@@ -559,7 +565,7 @@ def test_agent():
     # Test Double DQN variant
     print("\nTesting Double DQN variant...")
     agent_ddqn = DQNAgent(
-        state_dim=state_dim, action_dim=5, batch_size=32, use_double_dqn=True, learning_starts=0
+        state_dim=state_dim, action_dim=action_dim, batch_size=32, use_double_dqn=True, learning_starts=0
     )
     for _ in range(32):
         agent_ddqn.remember(state, action, 1.0, state, False)
@@ -570,7 +576,7 @@ def test_agent():
     # Test Dueling DQN variant
     print("\nTesting Dueling DQN variant...")
     agent_duel = DQNAgent(
-        state_dim=state_dim, action_dim=5, batch_size=32, use_dueling=True, learning_starts=0
+        state_dim=state_dim, action_dim=action_dim, batch_size=32, use_dueling=True, learning_starts=0
     )
     for _ in range(32):
         agent_duel.remember(state, action, 1.0, state, False)
@@ -582,7 +588,7 @@ def test_agent():
     print("\nTesting prioritized replay variant...")
     agent_per = DQNAgent(
         state_dim=state_dim,
-        action_dim=5,
+        action_dim=action_dim,
         batch_size=32,
         learning_starts=0,
         use_prioritized=True,
@@ -597,7 +603,7 @@ def test_agent():
     print("\nTesting Polyak averaging...")
     agent_polyak = DQNAgent(
         state_dim=state_dim,
-        action_dim=5,
+        action_dim=action_dim,
         batch_size=32,
         learning_starts=0,
         target_update_mode="hard",
@@ -661,7 +667,7 @@ def test_agent():
         agent.save(path)
         
         # Create new agent and load
-        agent2 = DQNAgent(state_dim=state_dim, action_dim=5)
+        agent2 = DQNAgent(state_dim=state_dim, action_dim=action_dim)
         agent2.load(path)
         
         assert agent2.epsilon == agent.epsilon, "Epsilon should match"
@@ -680,10 +686,10 @@ def test_agent():
     
     # Test RandomAgent
     print("\nTesting RandomAgent...")
-    random_agent = RandomAgent(action_dim=5)
+    random_agent = RandomAgent(action_dim=action_dim)
     random_action = random_agent.select_action()
     print(f"Random agent action: {random_action}")
-    assert 0 <= random_action < 5, "Random agent action out of range"
+    assert 0 <= random_action < action_dim, "Random agent action out of range"
     
     random_stats = random_agent.get_stats()
     assert 'episodes' in random_stats, "Random agent stats should include episodes"

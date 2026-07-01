@@ -9,8 +9,8 @@ This document provides guidance for AI agents (like Mistral Vibe) when working w
 ### Project Purpose
 PyRacer is a **2D racing game with multiple learning approaches** where:
 - A car learns to drive on procedurally generated tracks
-- Supports **DQN (reward-based RL)** and **JEPA (self-supervised world model)**
-- Uses `--approach {dqn,jepa}` flag to switch between approaches
+- Supports **DQN (reward-based RL)**, **JEPA (self-supervised world model)**, and **Evolution (neuroevolution)**
+- Uses `--approach {dqn,jepa,evo}` flag to switch between approaches
 - Supports both **human play** and **AI training** modes
 
 ### Key Files
@@ -32,6 +32,7 @@ PyRacer is a **2D racing game with multiple learning approaches** where:
 | `jepa/agent.py` | JEPA agent | `JEPAAgent` (world model + CEM planner) |
 | `jepa/model.py` | JEPA networks | `StateEncoder`, `Predictor`, `vicreg_loss()` |
 | `jepa/memory.py` | JEPA buffers | `TransitionBuffer`, `GoalBuffer` |
+| `evolution/agent.py` | Neuroevolution agent | `EvolutionAgent` |
 | `utils/config.py` | Configuration | `Config` class with all hyperparameters |
 
 ---
@@ -75,7 +76,7 @@ PyRacer is a **2D racing game with multiple learning approaches** where:
                               │                        │
                     ┌─────────┴────────────────────────┴──┐
                     │           utils/config.py            │
-                    │  All hyperparameters (DQN + JEPA)    │
+                    │ All hyperparameters (DQN/JEPA/Evo)   │
                     └─────────────────────────────────────┘
 ```
 
@@ -119,6 +120,18 @@ User runs: python train.py --episodes 1000
 │   agent.update_target()   │ ←─ Copy policy_net → target_net
 └─────────────────────────┘
 ```
+
+### Resume From Best Model
+
+Use `--load-best` to continue from the most recent best checkpoint for the selected approach:
+
+```bash
+python train.py --episodes 1000 --load-best
+python train.py --approach jepa --episodes 1000 --load-best
+python train.py --approach evo --generations 100 --load-best
+```
+
+`train.py` matches `saved_models/best_model_<timestamp>.pth` with `logs/config_<timestamp>.json`, then loads the newest checkpoint whose saved `args.approach` matches the current `--approach`. Use explicit `--load path/to/model.pth` when you need a specific checkpoint instead. Do not combine `--load` and `--load-best`.
 
 ### Data Flow During JEPA Training
 
@@ -209,8 +222,8 @@ User runs: python train.py --approach jepa --episodes 1000
 
 **Key principles:**
 - State dimension: 11 (7 sensors + speed + sin(angle) + cos(angle) + progress)
-- Action dimension: 5 (see ACTIONS in config.py)
-- Reward shaping: Encourages progress, penalizes collisions/time
+- Action dimension: 4 (see ACTIONS in config.py)
+- Reward shaping: starts at 0, rewards moving closer to the next checkpoint and forward along the track, penalizes collisions/off-track/stalling/time
 - Double DQN: Separates action selection and evaluation
 
 ### When Modifying JEPA Components
@@ -222,7 +235,7 @@ User runs: python train.py --approach jepa --episodes 1000
 - `utils/config.py` - JEPA hyperparameters (JEPA_* prefix)
 
 **Key principles:**
-- Same state/action dimensions as RL (11-dim state, 5 discrete actions)
+- Same state/action dimensions as RL (11-dim state, 4 discrete actions)
 - No reward signal used for learning (only for logging/comparison)
 - World model trained via self-supervised prediction in latent space
 - VICReg prevents representational collapse (all states → same embedding)
@@ -277,12 +290,11 @@ ACTIONS = {
     1: {'throttle': 0.8,  'steering': -0.8},  # Accelerate + turn left
     2: {'throttle': 0.8,  'steering': 0.8},   # Accelerate + turn right
     3: {'throttle': 0.3,  'steering': 0.0},   # Coast straight
-    4: {'throttle': -1.0, 'steering': 0.0},   # Brake hard
 }
 ```
 
 **Action mapping:**
-- `throttle`: -1.0 (reverse) to 1.0 (full throttle)
+- `throttle`: 0.0 (no throttle) to 1.0 (full throttle); learned agents cannot reverse
 - `steering`: -1.0 (left) to 1.0 (right)
 
 ### 3. Reward Function
@@ -290,9 +302,21 @@ ACTIONS = {
 ```python
 # From game/game.py step() method
 
-# Progress reward (per step)
-progress_diff = current_progress - prev_progress
-reward += progress_diff * config.REWARD_PROGRESS  # +25 per fractional progress
+# Every RL step starts neutral
+reward = config.REWARD_INITIAL  # 0.0
+
+# Next-checkpoint approach reward (per step)
+# Closer to next ordered checkpoint => positive; farther away => negative.
+raw_diff = prev_checkpoint_distance - checkpoint_distance
+checkpoint_approach_reward = raw_diff * config.REWARD_CHECKPOINT_APPROACH
+if raw_diff < 0.0:
+    checkpoint_approach_reward *= config.REWARD_WRONG_WAY_MULTIPLIER
+reward += checkpoint_approach_reward
+
+# Forward-driving reward (per step)
+# Rewards velocity aligned with the track centerline direction.
+forward_drive_reward = normalized_forward_speed * config.REWARD_FORWARD_SPEED
+reward += forward_drive_reward
 
 # Checkpoint reward
 if new_checkpoint_reached:
@@ -300,13 +324,25 @@ if new_checkpoint_reached:
 
 # Lap completion reward
 if lap_completed:
-    reward += config.REWARD_LAP_COMPLETE  # +200
+    lap_reward = config.REWARD_LAP_COMPLETE  # +200
     if new_best_lap:
-        reward *= 1.5  # Bonus for new best
+        lap_reward *= 1.5  # Bonus for new best
+    reward += lap_reward
 
 # Collision penalty
 if collision:
     reward += config.REWARD_COLLISION  # -50
+    done = True
+
+# Off-track penalty
+if off_track:
+    reward += config.REWARD_OFF_TRACK  # -25
+    if config.OFF_TRACK_TERMINATES:
+        done = True
+
+# Stall penalty
+if no_progress_for_too_long:
+    reward += config.REWARD_NO_PROGRESS  # -60
     done = True
 
 # Time penalty (per step)
@@ -406,9 +442,9 @@ for each segment (p0, p1, p2, p3):
 # In utils/config.py
 ACTIONS = {
     ...
-    5: {'throttle': 0.3, 'steering': -0.5},  # Coast left
+    4: {'throttle': 0.3, 'steering': -0.5},  # Coast left
 }
-ACTION_DIM = 6  # Was 5, now 6
+ACTION_DIM = 5  # Was 4, now 5
 ```
 
 ### Task 2: Modify Reward Function
@@ -604,7 +640,7 @@ SENSOR_ANGLES = [-90, -60, -30, 0, 30, 60, 90]  # Degrees
 ```python
 STATE_DIM = 11             # 7 sensors + speed + sin(angle) + cos(angle) + progress
 STATE_VERSION = 2
-ACTION_DIM = 5
+ACTION_DIM = 4
 HIDDEN_DIM = 128
 LEARNING_RATE = 0.001
 GAMMA = 0.99              # Discount factor
@@ -625,7 +661,16 @@ REWARD_LAP_COMPLETE = 200.0
 REWARD_CHECKPOINT = 5.0
 REWARD_COLLISION = -50.0
 REWARD_TIME_PENALTY = -0.01  # Per step
-REWARD_PROGRESS = 25.0      # Per fractional progress
+REWARD_INITIAL = 0.0
+REWARD_CHECKPOINT_APPROACH = 25.0  # Per normalized distance closed to next checkpoint
+REWARD_PROGRESS = REWARD_CHECKPOINT_APPROACH  # Backward-compatible alias
+REWARD_FORWARD_SPEED = 0.02  # Max per-step reward for full-speed track-aligned forward motion
+REWARD_WRONG_WAY_MULTIPLIER = 2.0
+REWARD_OFF_TRACK = -25.0
+OFF_TRACK_TERMINATES = True
+REWARD_NO_PROGRESS = -60.0
+NO_PROGRESS_PATIENCE_STEPS = 240
+MIN_PROGRESS_DELTA = 1e-4
 ```
 
 ### Training
@@ -636,7 +681,7 @@ LEARNING_STARTS = 1000  # Start training after N environment steps
 TRAIN_START_EPISODE = 100  # Deprecated; kept for compatibility
 SAVE_FREQ = 50           # Save model every N episodes
 LOG_FREQ = 10            # Log every N episodes
-DEFAULT_APPROACH = "dqn" # "dqn" or "jepa"
+DEFAULT_APPROACH = "dqn" # "dqn", "jepa", or "evo"
 ```
 
 ### JEPA Hyperparameters
@@ -685,7 +730,7 @@ JEPA_TRAIN_FREQ = 4          # Train every N env steps
 
 3. Verify actions are varied
    - Add `print(f"Action: {action}")` after selection
-   - Expected: All 5 actions should be tried (especially early training)
+   - Expected: All 4 actions should be tried (especially early training)
 
 4. Check Q-values
    - In `agent.py`, add q-value logging
@@ -1131,16 +1176,17 @@ torch.manual_seed(42)
 **Problem:** Agent continues random actions past warmup
 **Solution:** Check that goal buffer is populated. Verify `JEPA_GOAL_PROGRESS_THRESHOLD` isn't too high — car needs to reach that progress during random exploration.
 
-### Pitfall 9: Mixing DQN and JEPA Model Files
-**Problem:** Loading a DQN .pth file into JEPAAgent or vice versa
-**Solution:** JEPA saves encoder/predictor/target_encoder. DQN saves policy_net/target_net. They are not interchangeable. Use `--approach` flag consistently.
+### Pitfall 9: Mixing DQN, JEPA, and Evolution Model Files
+**Problem:** Loading a checkpoint into the wrong agent type.
+**Solution:** DQN saves policy/target Q-networks, JEPA saves encoder/predictor/target_encoder, and Evolution saves the best genome. They are not interchangeable. Use `--approach` consistently and prefer `--load-best` when resuming the latest best model for the selected approach.
 
 ### Pitfall 10: Forgetting --approach Flag When Testing
-**Problem:** Testing a JEPA model with DQN agent (or vice versa)
-**Solution:** Always match `--approach` between train and test:
+**Problem:** Testing or resuming a checkpoint with the wrong agent type.
+**Solution:** Always match `--approach` between train and test/resume:
 ```bash
 python train.py --approach jepa --save-dir models_jepa
 python test.py --approach jepa --model models_jepa/best_model_*.pth
+python train.py --approach jepa --load-best
 ```
 
 ---
