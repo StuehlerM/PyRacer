@@ -29,8 +29,8 @@ import numpy as np
 import torch
 
 from game.track import Track
+from game.environment import RacingEnv
 from rl.agent import DQNAgent
-from rl.environment import RacingEnv
 from jepa.agent import JEPAAgent
 from utils.config import config
 

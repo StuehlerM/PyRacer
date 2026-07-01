@@ -120,8 +120,8 @@ only a scalar score per policy. It trains by *generations*, not episodes
 ## Project layout
 
 ```
-game/      Car physics, procedural track (Catmull-Rom splines), raycasting, reward logic
-rl/        DQN/Dueling/Conv models, DQN agent, replay buffers, Gym-like environment
+game/      Car physics, procedural track (Catmull-Rom splines), raycasting, reward logic, Gym-like environment
+rl/        DQN/Dueling/Conv models, DQN agent, replay buffers
 jepa/      Encoder + predictor world model, VICReg loss, CEM planner, transition/goal buffers
 evolution/ Gradient-free policy net, genetic-algorithm population, neuroevolution agent
 utils/     config.py — every hyperparameter lives here

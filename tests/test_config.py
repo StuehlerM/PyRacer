@@ -30,6 +30,32 @@ def test_rl_hyperparameters_in_valid_ranges():
     assert config.MEMORY_SIZE >= config.BATCH_SIZE
 
 
+def test_default_epsilon_decay_keeps_exploration_after_warmup():
+    epsilon_after_1000_training_steps = max(
+        config.EPSILON_MIN,
+        config.EPSILON_START * (config.EPSILON_DECAY ** 1000),
+    )
+    epsilon_after_250k_training_steps = max(
+        config.EPSILON_MIN,
+        config.EPSILON_START * (config.EPSILON_DECAY ** 250_000),
+    )
+    epsilon_after_1m_training_steps = max(
+        config.EPSILON_MIN,
+        config.EPSILON_START * (config.EPSILON_DECAY ** 1_000_000),
+    )
+    assert epsilon_after_1000_training_steps > 0.99
+    assert epsilon_after_250k_training_steps > 0.25
+    assert epsilon_after_1m_training_steps == config.EPSILON_MIN
+
+
+def test_stall_reward_settings_make_waiting_worse_than_crashing():
+    stall_return = (
+        config.REWARD_NO_PROGRESS
+        + (config.NO_PROGRESS_PATIENCE_STEPS * config.REWARD_TIME_PENALTY)
+    )
+    assert stall_return < config.REWARD_COLLISION
+
+
 def test_every_action_is_bounded():
     for spec in config.ACTIONS.values():
         assert -1.0 <= spec["throttle"] <= 1.0

@@ -55,6 +55,18 @@ def test_on_env_step_decays_epsilon():
     assert agent.epsilon >= agent.epsilon_min
 
 
+def test_epsilon_does_not_decay_during_learning_warmup():
+    agent = _make_agent(learning_starts=5)
+    start = agent.epsilon
+
+    for _ in range(agent.learning_starts):
+        agent.on_env_step()
+
+    assert agent.epsilon == start
+    agent.on_env_step()
+    assert agent.epsilon < start
+
+
 def test_target_network_starts_synced_with_policy():
     agent = _make_agent()
     for p, t in zip(agent.policy_net.parameters(), agent.target_net.parameters()):

@@ -84,7 +84,7 @@ tensorboard==2.15.0
   - Model save/load
 - **RandomAgent**: Baseline agent for comparison
 
-### Environment Wrapper (`rl/environment.py`)
+### Environment Wrapper (`game/environment.py`)
 - `RacingEnv`: Gym-like interface for single track
 - `MultiTrackEnv`: Cycles through multiple tracks for generalization
 - State normalization
@@ -202,13 +202,13 @@ Pyracer/
 │   ├── car.py            # Car physics and rendering
 │   ├── track.py          # Track generation and collision
 │   ├── game.py           # Main game loop and RL interface
-│   └── physics.py        # Physics utilities
+│   ├── physics.py        # Physics utilities
+│   └── environment.py    # Gym-like training environment wrapper
 ├── rl/
 │   ├── __init__.py      # Package exports
 │   ├── agent.py          # DQN agent implementation
 │   ├── model.py          # Neural network models
-│   ├── memory.py         # Experience replay buffer
-│   └── environment.py    # RL environment wrapper
+│   └── memory.py         # Experience replay buffer
 ├── utils/
 │   ├── __init__.py
 │   └── config.py         # Configuration and hyperparameters

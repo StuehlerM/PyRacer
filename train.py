@@ -23,8 +23,8 @@ import numpy as np
 import torch
 
 from game.track import Track
+from game.environment import RacingEnv, MultiTrackEnv
 from rl.agent import DQNAgent, RandomAgent
-from rl.environment import RacingEnv, MultiTrackEnv
 from jepa.agent import JEPAAgent
 from evolution.agent import EvolutionAgent
 from utils.config import config
@@ -163,17 +163,21 @@ class TrainingLogger:
             writer = csv.writer(f)
             writer.writerow([
                 'episode', 'total_reward', 'avg_reward', 'lap_time', 
-                'best_lap_time', 'epsilon', 'loss', 'steps', 'memory_size'
+                'best_lap_time', 'epsilon', 'loss', 'steps', 'memory_size',
+                'max_progress', 'collision', 'off_track', 'stalled'
             ])
     
     def log_episode(self, episode, total_reward, avg_reward, lap_time, 
-                    best_lap_time, epsilon, loss, steps, memory_size):
+                    best_lap_time, epsilon, loss, steps, memory_size,
+                    max_progress=0.0, collision=False, off_track=False,
+                    stalled=False):
         """Log an episode to CSV."""
         with open(self.csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
                 episode, total_reward, avg_reward, lap_time,
-                best_lap_time, epsilon, loss, steps, memory_size
+                best_lap_time, epsilon, loss, steps, memory_size,
+                max_progress, collision, off_track, stalled
             ])
     
     def save_config(self, args):
@@ -209,11 +213,12 @@ class TrainingLogger:
             agent.save(self.latest_model_path)
     
     def print_summary(self, episode, total_reward, avg_reward, lap_time,
-                      best_lap_time, epsilon, loss, steps):
+                      best_lap_time, epsilon, loss, steps, max_progress=0.0):
         """Print training summary for an episode."""
         print(f"\rEpisode {episode:5d} | "
               f"Reward: {total_reward:8.2f} | "
               f"Avg: {avg_reward:8.2f} | "
+              f"MaxProg: {max_progress * 100:5.1f}% | "
               f"Lap: {lap_time:.2f}s | "
               f"Best: {best_lap_time:.2f}s | "
               f"Eps: {epsilon:.4f} | "
@@ -326,6 +331,10 @@ def train_agent(args):
             episode_steps = 0
             lap_completed = False
             current_lap_time = 0
+            episode_max_progress = 0.0
+            episode_collision = False
+            episode_off_track = False
+            episode_stalled = False
             
             # Inner loop is interaction phase: act, observe reward, store transition, update policy.
             done = False
@@ -350,6 +359,13 @@ def train_agent(args):
                 state = next_state
                 episode_reward += reward
                 episode_steps += 1
+                episode_max_progress = max(
+                    episode_max_progress,
+                    info.get('forward_progress', info.get('progress', 0.0)),
+                )
+                episode_collision = episode_collision or info.get('collision', False)
+                episode_off_track = episode_off_track or info.get('off_track', False)
+                episode_stalled = episode_stalled or info.get('stalled', False)
                 
                 # Check for lap completion
                 if info.get('lap_completed', False):
@@ -388,7 +404,11 @@ def train_agent(args):
                 epsilon=agent.epsilon,
                 loss=episode_loss / max(1, episode_steps),
                 steps=agent_stats['env_steps'],
-                memory_size=len(agent.memory)
+                memory_size=len(agent.memory),
+                max_progress=episode_max_progress,
+                collision=episode_collision,
+                off_track=episode_off_track,
+                stalled=episode_stalled
             )
             
             # Print summary
@@ -401,7 +421,8 @@ def train_agent(args):
                     best_lap_time=best_lap_time,
                     epsilon=agent.epsilon,
                     loss=episode_loss / max(1, episode_steps),
-                    steps=agent_stats['env_steps']
+                    steps=agent_stats['env_steps'],
+                    max_progress=episode_max_progress
                 )
             
             # Keep latest checkpoint for resume/debug, even when it is worse than best smoothed policy.
@@ -659,6 +680,7 @@ def test_agent(args):
             lr=args.lr,
             gamma=args.gamma,
             epsilon=0.0,  # No exploration during testing
+            epsilon_min=0.0,
             batch_size=args.batch_size
         )
     

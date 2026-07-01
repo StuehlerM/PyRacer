@@ -62,7 +62,7 @@ class DQNAgent:
             gamma: float - discount factor (must be in (0, 1])
             epsilon: float - initial exploration rate
             epsilon_min: float - minimum exploration rate
-            epsilon_decay: float - exploration decay rate per step
+            epsilon_decay: float - exploration decay rate per post-warm-up env step
             memory_size: int - size of replay buffer
             batch_size: int - batch size for training
             target_update_freq: int - steps between target network updates
@@ -300,10 +300,12 @@ class DQNAgent:
         return loss.item()
 
     def on_env_step(self) -> None:
-        """Advance env-step counter and decay epsilon once per environment step."""
+        """Advance env-step counter and decay epsilon after replay warm-up."""
         self.env_steps += 1
         self.steps = self.env_steps
-        # Exploration decays gradually so agent shifts from discovery to exploiting learned values.
+        if self.env_steps <= self.learning_starts:
+            return
+        # Exploration decays only after updates can happen; otherwise the agent exploits random Q-values.
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
      
     def update_target(self, hard_update: bool = False):

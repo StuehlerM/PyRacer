@@ -6,7 +6,7 @@ These run headless thanks to the SDL dummy driver set in conftest.py.
 import numpy as np
 import pytest
 
-from rl.environment import RacingEnv
+from game.environment import RacingEnv
 from utils.config import config
 
 

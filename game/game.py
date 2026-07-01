@@ -75,6 +75,9 @@ class Game:
         
         # For RL
         self.prev_progress = self.track.get_progress(tuple(self.car.position))
+        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(self.prev_progress)
+        self.episode_forward_progress = 0.0
+        self.steps_since_progress = 0
         self.steps_in_episode = 0
         self.max_steps = config.MAX_STEPS_PER_EPISODE
     
@@ -101,6 +104,9 @@ class Game:
         self.episode_reward = 0.0
         self.steps_in_episode = 0
         self.prev_progress = self.track.get_progress(tuple(self.car.position))
+        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(self.prev_progress)
+        self.episode_forward_progress = 0.0
+        self.steps_since_progress = 0
         self._render_step_counter = 0
         
         # Return initial observation
@@ -122,6 +128,7 @@ class Game:
         
         # Initialize new_best flag for this step
         new_best = False
+        stalled = False
         
         # Map action to throttle and steering
         if action is not None:
@@ -163,19 +170,32 @@ class Game:
         )
         
         # Calculate progress (expensive - iterates through all waypoints)
-        current_progress = self.track.get_progress(tuple(self.car.position))
+        current_progress, centerline_distance = self.track.get_progress(
+            tuple(self.car.position),
+            return_distance=True,
+        )
+        off_track = centerline_distance > (self.track.track_width * 0.5)
         
         # If in human driving mode (learning_mode=False), skip all learning-related calculations
         if self.learning_mode:
-            # Reward shaping pays for forward motion so agent learns before full laps become common.
-            raw_diff = current_progress - self.prev_progress
-            # If we apparently went backwards by > 0.5 of the track, treat it as a wrap.
-            if raw_diff < -0.5:
-                raw_diff += 1.0
-            elif raw_diff > 0.5:
-                # Teleport / glitch — treat as zero progress this step
+            # Reward shaping only cares about closing distance to the next ordered checkpoint.
+            target_checkpoint_idx = self.last_checkpoint_idx + 1
+            checkpoint_distance = self._distance_to_next_checkpoint(
+                current_progress,
+                checkpoint_idx=target_checkpoint_idx,
+            )
+            raw_diff = self.prev_checkpoint_distance - checkpoint_distance
+            if abs(raw_diff) > 0.5:
                 raw_diff = 0.0
             progress_reward = raw_diff * config.REWARD_PROGRESS
+            if raw_diff < 0.0:
+                progress_reward *= config.REWARD_WRONG_WAY_MULTIPLIER
+            if raw_diff > config.MIN_PROGRESS_DELTA:
+                self.steps_since_progress = 0
+            else:
+                self.steps_since_progress += 1
+            if raw_diff > 0.0:
+                self.episode_forward_progress = min(1.0, self.episode_forward_progress + raw_diff)
             self.prev_progress = current_progress
             
             # RL reward is sum of small hints, not only sparse win/lose events.
@@ -212,11 +232,25 @@ class Game:
                     self.last_checkpoint_idx = -1
                     
                     reward += lap_reward
+
+                self.prev_checkpoint_distance = self._distance_to_next_checkpoint(current_progress)
+            else:
+                self.prev_checkpoint_distance = checkpoint_distance
             
             # Crashes end episode so replay buffer clearly labels bad trajectories as terminal.
             if is_colliding:
                 reward += config.REWARD_COLLISION
                 done = True
+
+            if off_track:
+                reward += config.REWARD_OFF_TRACK
+                if config.OFF_TRACK_TERMINATES:
+                    done = True
+
+            if self.steps_since_progress >= config.NO_PROGRESS_PATIENCE_STEPS:
+                reward += config.REWARD_NO_PROGRESS
+                done = True
+                stalled = True
             
             # Small living cost discourages idling and forces agent to trade safety vs pace.
             reward += config.REWARD_TIME_PENALTY
@@ -279,7 +313,12 @@ class Game:
             'lap_time': self._completed_lap_time if is_finish else self.lap_time,
             'best_lap_time': self.best_lap_time,
             'collision': is_colliding,
+            'off_track': off_track,
+            'stalled': stalled,
+            'steps_since_progress': self.steps_since_progress,
             'progress': current_progress,
+            'checkpoint_distance': self.prev_checkpoint_distance,
+            'forward_progress': self.episode_forward_progress,
             'lap_completed': is_finish,
             'new_best_lap': is_finish and new_best,
             'episode_reward': self.episode_reward,
@@ -302,6 +341,20 @@ class Game:
             x < -margin or x > config.SCREEN_WIDTH + margin or
             y < -margin or y > config.SCREEN_HEIGHT + margin
         )
+
+    def _distance_to_next_checkpoint(self, progress, checkpoint_idx=None):
+        """Forward progress distance from current progress to next ordered checkpoint."""
+        if checkpoint_idx is None:
+            checkpoint_idx = self.last_checkpoint_idx + 1
+
+        target_progress = self.track.get_checkpoint_progress(checkpoint_idx)
+        if target_progress is None:
+            return 0.0
+
+        distance = target_progress - progress
+        if distance < 0.0:
+            distance += 1.0
+        return float(distance)
     
     def _get_state(self, sensor_readings=None, progress=None, skip_sensors=False):
         """

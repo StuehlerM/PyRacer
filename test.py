@@ -18,8 +18,8 @@ from datetime import datetime
 import torch
 
 from game.track import Track
+from game.environment import RacingEnv, MultiTrackEnv
 from rl.agent import DQNAgent, RandomAgent
-from rl.environment import RacingEnv, MultiTrackEnv
 from jepa.agent import JEPAAgent
 from evolution.agent import EvolutionAgent
 from utils.config import config
@@ -270,7 +270,8 @@ def compare_agents(args):
             trained_agent = DQNAgent(
                 state_dim=config.STATE_DIM,
                 action_dim=config.ACTION_DIM,
-                epsilon=0.0  # No exploration
+                epsilon=0.0,  # No exploration
+                epsilon_min=0.0,
             )
         trained_agent.load(args.model)
         trained_result = test_agent(
@@ -347,7 +348,8 @@ def test_multi_track(args):
             agent = DQNAgent(
                 state_dim=config.STATE_DIM,
                 action_dim=config.ACTION_DIM,
-                epsilon=0.0
+                epsilon=0.0,
+                epsilon_min=0.0,
             )
         agent.load(args.model)
     else:
@@ -441,7 +443,8 @@ def main():
                 agent = DQNAgent(
                     state_dim=config.STATE_DIM,
                     action_dim=config.ACTION_DIM,
-                    epsilon=0.0
+                    epsilon=0.0,
+                    epsilon_min=0.0,
                 )
             agent.load(args.model)
             name = f"Trained Agent ({args.approach.upper()})"

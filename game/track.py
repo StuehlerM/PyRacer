@@ -339,7 +339,8 @@ class Track:
             checkpoint_pos = self.waypoints[idx]
             self.checkpoints.append({
                 'position': checkpoint_pos,
-                'index': i
+                'index': i,
+                'waypoint_idx': idx,
             })
         
         # The finish line also serves as the last checkpoint
@@ -347,6 +348,7 @@ class Track:
             self.checkpoints.append({
                 'position': self.finish_line[0],
                 'index': num_checkpoints,
+                'waypoint_idx': self.start_idx,
                 'is_finish': True
             })
     
@@ -566,7 +568,7 @@ class Track:
         
         return False, None
     
-    def get_progress(self, position, last_idx_hint=None, return_idx=False):
+    def get_progress(self, position, last_idx_hint=None, return_idx=False, return_distance=False):
         """
         Calculate the progress along the track (0-1).
         
@@ -574,9 +576,10 @@ class Track:
             position: tuple (x, y) - current position
             last_idx_hint: int - optional previous closest segment index
             return_idx: bool - return (progress, closest_idx) if True
+            return_distance: bool - return centerline distance used for off-track checks
         
         Returns:
-            float: progress from 0 to 1, or tuple if return_idx is True
+            float: progress from 0 to 1, or tuple with requested extra values
         """
         # Use cached data for performance
         if (self._cached_waypoints_array is None or 
@@ -602,7 +605,7 @@ class Track:
         )
 
         if hint is not None and closest_distance > self.track_width:
-            closest_segment_idx, closest_point_on_segment, _ = (
+            closest_segment_idx, closest_point_on_segment, closest_distance = (
                 self._closest_progress_segment(position, np.arange(n))
             )
 
@@ -626,9 +629,50 @@ class Track:
             distance_from_start = (distance_from_start - start_distance) % total_length
             progress = distance_from_start / total_length
             progress = float(progress)
-            return (progress, closest_segment_idx) if return_idx else progress
+        else:
+            progress = 0.0
         
-        return (0.0, closest_segment_idx) if return_idx else 0.0
+        if return_idx and return_distance:
+            return progress, closest_segment_idx, closest_distance
+        if return_idx:
+            return progress, closest_segment_idx
+        if return_distance:
+            return progress, closest_distance
+        return progress
+
+    def get_checkpoint_progress(self, checkpoint_idx):
+        """Return ordered checkpoint progress around the lap.
+
+        Finish is reported as 1.0, not 0.0, so reward shaping can target it
+        after all intermediate checkpoints have been reached.
+        """
+        if (self._cached_segment_lengths is None or
+            self._cached_total_length is None):
+            self._cache_track_data()
+
+        for checkpoint in self.checkpoints:
+            if checkpoint['index'] != checkpoint_idx:
+                continue
+            if checkpoint.get('is_finish', False):
+                return 1.0
+
+            total_length = self._cached_total_length
+            if total_length <= 0:
+                return 0.0
+            waypoint_idx = checkpoint.get('waypoint_idx')
+            if waypoint_idx is None:
+                return 0.0
+            start_distance = (
+                float(np.sum(self._cached_segment_lengths[:self.start_idx]))
+                if self.start_idx > 0 else 0.0
+            )
+            checkpoint_distance = (
+                float(np.sum(self._cached_segment_lengths[:waypoint_idx]))
+                if waypoint_idx > 0 else 0.0
+            )
+            return float(((checkpoint_distance - start_distance) % total_length) / total_length)
+
+        return None
 
     def _closest_progress_segment(self, position, indices):
         """Find closest center-line segment among candidate indices."""

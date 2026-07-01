@@ -71,10 +71,11 @@ class Config:
     LEARNING_RATE = 0.001
     # Gamma near 1.0 values future lap progress almost as much as immediate reward.
     GAMMA = 0.99  # Discount factor
-    # Epsilon starts high for exploration, then decays so policy gradually trusts learned Q-values more.
+    # Epsilon starts high for exploration, then decays after replay warm-up so the
+    # policy does not exploit an untrained Q-network before updates begin.
     EPSILON_START = 1.0  # Initial exploration rate
     EPSILON_MIN = 0.01  # Minimum exploration rate
-    EPSILON_DECAY = 0.995  # Exploration decay rate
+    EPSILON_DECAY = 0.999995  # Exploration decay rate per post-warm-up env step
     MEMORY_SIZE = 10000  # Replay buffer size
     BATCH_SIZE = 64
     # Warm-up delays learning until replay buffer has varied data instead of first few biased crashes.
@@ -105,6 +106,12 @@ class Config:
     REWARD_COLLISION = -50.0
     REWARD_TIME_PENALTY = -0.01  # Per step penalty to encourage speed
     REWARD_PROGRESS = 25.0  # Reward per fractional progress made
+    REWARD_WRONG_WAY_MULTIPLIER = 2.0  # Extra penalty multiplier when progress goes backwards
+    REWARD_OFF_TRACK = -25.0  # Penalty applied when car center leaves road width
+    OFF_TRACK_TERMINATES = True  # End episode immediately when car leaves track
+    REWARD_NO_PROGRESS = -60.0  # Terminal penalty when policy stalls instead of racing
+    NO_PROGRESS_PATIENCE_STEPS = 240  # ~4 seconds at 60 FPS with no meaningful forward progress
+    MIN_PROGRESS_DELTA = 1e-4  # Smallest forward progress that resets no-progress patience
     
     # =====================
     # Approach Selection

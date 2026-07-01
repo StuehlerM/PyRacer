@@ -22,13 +22,13 @@ PyRacer is a **2D racing game with multiple learning approaches** where:
 | `test.py` | Evaluation entry point | `compare_agents()` |
 | `compare.py` | DQN vs JEPA comparison | `train_approach()`, `generate_plots()` |
 | `game/game.py` | Game loop & RL interface | `Game` class, `reset()`, `step()` |
+| `game/environment.py` | Gym-style training environment | `RacingEnv`, `MultiTrackEnv` |
 | `game/car.py` | Car physics & sensors | `Car` class, `update()`, `get_sensor_readings()` |
 | `game/track.py` | Track generation | `Track` class, `_catmull_rom_spline()` |
 | `game/physics.py` | Physics utilities | `ray_cast()`, `line_segment_intersection()` |
 | `rl/agent.py` | DQN agent | `DQNAgent`, `RandomAgent` |
 | `rl/model.py` | Neural networks | `DQN`, `DuelingDQN`, `ConvDQN` |
 | `rl/memory.py` | Experience replay | `ReplayBuffer` |
-| `rl/environment.py` | RL environment | `RacingEnv`, `MultiTrackEnv` |
 | `jepa/agent.py` | JEPA agent | `JEPAAgent` (world model + CEM planner) |
 | `jepa/model.py` | JEPA networks | `StateEncoder`, `Predictor`, `vicreg_loss()` |
 | `jepa/memory.py` | JEPA buffers | `TransitionBuffer`, `GoalBuffer` |
@@ -51,8 +51,8 @@ PyRacer is a **2D racing game with multiple learning approaches** where:
            │           │                 │              │
            ▼           ▼                 ▼              ▼
 ┌─────────────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────────┐
-│  game/Game      │ │ rl/agent    │ │ rl/environ- │ │ jepa/    │
-│                 │ │             │ │ ment        │ │ agent    │
+│  game/Game      │ │ rl/agent    │ │ game/envi-  │ │ jepa/    │
+│                 │ │             │ │ ronment     │ │ agent    │
 │ - Game loop    │ │ - DQNAgent  │ │             │ │          │
 │ - Rendering    │ │ - RandomAgent│ │ - RacingEnv│ │- JEPAAgent│
 │ - RL interface │ │             │ │ - MultiTrack│ │- CEM plan │
@@ -204,7 +204,7 @@ User runs: python train.py --approach jepa --episodes 1000
 - `rl/agent.py` - DQN algorithm implementation
 - `rl/model.py` - Neural network architectures
 - `rl/memory.py` - Experience replay buffer
-- `rl/environment.py` - State/reward wrapping
+- `game/environment.py` - State/reward wrapping
 - `utils/config.py` - RL hyperparameters
 
 **Key principles:**
