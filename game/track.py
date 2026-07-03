@@ -533,42 +533,42 @@ class Track:
     
     def check_collision(self, position, radius=15):
         """
-        Check if a point (with radius) is colliding with track boundaries.
+        Check if a point has left the drivable track surface.
         
         Args:
             position: tuple (x, y) - position to check
-            radius: float - radius of the object
+            radius: float - unused; kept for backward-compatible callers
         
         Returns:
             tuple: (is_colliding, collision_info)
         """
-        x, y = position
-        
-        # Use spatial partitioning to check only nearby segments
-        nearby_segment_indices = None
-        if self._spatial_grid is not None:
-            nearby_segment_indices = self.get_nearby_segments(position, radius + 10)
-        
-        # Determine which segments to check
-        if nearby_segment_indices is not None and len(nearby_segment_indices) < len(self.segments):
-            segments_to_check = [self.segments[i] for i in nearby_segment_indices]
-        else:
-            segments_to_check = self.segments
-        
-        # Check against each relevant boundary segment
-        for seg_start, seg_end in segments_to_check:
-            # Calculate distance from position to segment
-            from .physics import point_to_line_distance
-            distance = point_to_line_distance(position, seg_start, seg_end)
-            
-            if distance < radius:
-                return True, {'type': 'wall', 'segment': (seg_start, seg_end)}
-        
-        # Check if inside the track area (between inner and outer boundaries)
-        # We use a simpler check: if not colliding with boundaries and within rough bounds
-        # This could be improved with a proper point-in-polygon check
-        
+        if not self.is_on_track(position):
+            return True, {'type': 'off_track', 'point': position}
         return False, None
+
+    def is_on_track(self, position, tolerance=1e-6):
+        """
+        Return True when a point lies on the road surface.
+
+        Args:
+            position: tuple (x, y) - position to check
+            tolerance: float - extra numeric tolerance in pixels
+
+        Returns:
+            bool: True if the point is within half the track width from centerline
+        """
+        if (self._cached_waypoints_array is None or
+                self._cached_waypoints_count == 0):
+            self._cache_track_data()
+
+        if self._cached_waypoints_count == 0:
+            return False
+
+        _, _, centerline_distance = self._closest_progress_segment(
+            np.asarray(position, dtype=float),
+            np.arange(self._cached_waypoints_count),
+        )
+        return centerline_distance <= (self.track_width * 0.5) + tolerance
     
     def get_progress(self, position, last_idx_hint=None, return_idx=False, return_distance=False):
         """

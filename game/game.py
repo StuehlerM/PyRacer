@@ -75,7 +75,7 @@ class Game:
         
         # For RL
         self.prev_progress = self.track.get_progress(tuple(self.car.position))
-        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(tuple(self.car.position))
+        self.prev_checkpoint_distance = self._progress_remaining_to_next_checkpoint(self.prev_progress)
         self.episode_forward_progress = 0.0
         self.steps_since_progress = 0
         self.steps_in_episode = 0
@@ -104,7 +104,7 @@ class Game:
         self.episode_reward = 0.0
         self.steps_in_episode = 0
         self.prev_progress = self.track.get_progress(tuple(self.car.position))
-        self.prev_checkpoint_distance = self._distance_to_next_checkpoint(tuple(self.car.position))
+        self.prev_checkpoint_distance = self._progress_remaining_to_next_checkpoint(self.prev_progress)
         self.episode_forward_progress = 0.0
         self.steps_since_progress = 0
         self._render_step_counter = 0
@@ -152,18 +152,6 @@ class Game:
         # Increment step counter
         self.steps_in_episode += 1
         
-        # Cache once per frame because collision/progress are reused by reward, HUD, and next state.
-        # Check collision (expensive - iterates through all segments)
-        is_colliding, collision_info = self.car.check_collision(self.track)
-
-        # Wall-segment collision only fires when the car is near a boundary. A car that
-        # leaves the playfield (e.g. an untrained policy driving straight off the track)
-        # never gets close to a wall again, so without this it would run until max_steps
-        # with no terminal signal. Treat going out of bounds as a crash.
-        if not is_colliding and self._is_out_of_bounds():
-            is_colliding = True
-            collision_info = {'collision': True, 'reason': 'out_of_bounds'}
-        
         # Check checkpoint
         new_checkpoint_idx, is_finish = self.track.check_checkpoint(
             tuple(self.car.position), self.last_checkpoint_idx
@@ -174,19 +162,28 @@ class Game:
             tuple(self.car.position),
             return_distance=True,
         )
-        off_track = centerline_distance > (self.track.track_width * 0.5)
+        center_off_track = bool(centerline_distance > (self.track.track_width * 0.5))
+        body_off_track, collision_info = self.car.check_collision(self.track)
+        body_off_track = bool(body_off_track)
+        out_of_bounds = self._is_out_of_bounds()
+        off_track = bool(center_off_track or body_off_track or out_of_bounds)
+        is_colliding = off_track
+        if out_of_bounds:
+            collision_info = {'type': 'off_track', 'reason': 'out_of_bounds'}
+        elif center_off_track and collision_info is None:
+            collision_info = {'type': 'off_track', 'part': 'center', 'point': tuple(self.car.position)}
         checkpoint_approach_reward = 0.0
         forward_drive_reward = 0.0
         
         # If in human driving mode (learning_mode=False), skip all learning-related calculations
         if self.learning_mode:
-            # Closer to next ordered checkpoint => positive; farther away => negative.
+            # Forward along the centerline toward the next ordered checkpoint => positive.
             target_checkpoint_idx = self.last_checkpoint_idx + 1
-            checkpoint_distance = self._distance_to_next_checkpoint(
-                tuple(self.car.position),
+            checkpoint_distance = self._progress_remaining_to_next_checkpoint(
+                current_progress,
                 checkpoint_idx=target_checkpoint_idx,
             )
-            raw_diff = self.prev_checkpoint_distance - checkpoint_distance
+            raw_diff = self._calculate_progress_delta(self.prev_progress, current_progress)
             if abs(raw_diff) > 0.5:
                 raw_diff = 0.0
             checkpoint_approach_reward = raw_diff * config.REWARD_CHECKPOINT_APPROACH
@@ -237,17 +234,13 @@ class Game:
                     
                     reward += lap_reward
 
-                self.prev_checkpoint_distance = self._distance_to_next_checkpoint(tuple(self.car.position))
+                self.prev_checkpoint_distance = self._progress_remaining_to_next_checkpoint(current_progress)
             else:
                 self.prev_checkpoint_distance = checkpoint_distance
             
-            # Crashes end episode so replay buffer clearly labels bad trajectories as terminal.
+            # Crashes happen only when the car leaves the road surface.
             if is_colliding:
                 reward += config.REWARD_COLLISION
-                done = True
-
-            if off_track:
-                reward += config.REWARD_OFF_TRACK
                 if config.OFF_TRACK_TERMINATES:
                     done = True
 
@@ -256,8 +249,9 @@ class Game:
                 done = True
                 stalled = True
             
-            # Small living cost discourages idling and forces agent to trade safety vs pace.
-            reward += config.REWARD_TIME_PENALTY
+            # Idle or backwards driving gets a living cost; forward on-track driving stays positive.
+            if checkpoint_approach_reward <= 0.0 and forward_drive_reward <= 0.0:
+                reward += config.REWARD_TIME_PENALTY
             
             # Update total rewards
             self.episode_reward += reward
@@ -343,31 +337,25 @@ class Game:
         """True if the car left the screen by more than config.OOB_MARGIN pixels."""
         margin = config.OOB_MARGIN
         x, y = self.car.position
-        return (
+        return bool(
             x < -margin or x > config.SCREEN_WIDTH + margin or
             y < -margin or y > config.SCREEN_HEIGHT + margin
         )
 
-    def _distance_to_next_checkpoint(self, position, checkpoint_idx=None):
-        """Normalized Euclidean distance from car position to next ordered checkpoint."""
+    def _progress_remaining_to_next_checkpoint(self, progress, checkpoint_idx=None):
+        """Spline-progress distance remaining to the next ordered checkpoint."""
         if checkpoint_idx is None:
             checkpoint_idx = self.last_checkpoint_idx + 1
 
-        target_position = None
-        for checkpoint in self.track.checkpoints:
-            if checkpoint.get('index') == checkpoint_idx:
-                target_position = checkpoint.get('position')
-                break
-        if target_position is None:
+        target_progress = self.track.get_checkpoint_progress(checkpoint_idx)
+        if target_progress is None:
             return 0.0
 
-        dx = float(target_position[0]) - float(position[0])
-        dy = float(target_position[1]) - float(position[1])
-        screen_diagonal = max(
-            float(np.hypot(config.SCREEN_WIDTH, config.SCREEN_HEIGHT)),
-            1e-6,
-        )
-        return float(np.hypot(dx, dy) / screen_diagonal)
+        return float((target_progress - float(progress)) % 1.0)
+
+    def _calculate_progress_delta(self, previous_progress, current_progress):
+        """Signed spline-progress delta; positive means forward around the lap."""
+        return float((current_progress - previous_progress + 0.5) % 1.0 - 0.5)
 
     def _calculate_forward_drive_reward(self, progress):
         """Small positive reward for velocity aligned with track forward direction."""

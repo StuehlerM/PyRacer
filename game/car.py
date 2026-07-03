@@ -170,6 +170,32 @@ class Car:
             'speed': self.speed,
             'steering_angle': self.steering_angle
         }
+
+    def get_corners(self):
+        """
+        Return world-space corners of the oriented car body.
+
+        Returns:
+            list: four (x, y) tuples for the car rectangle corners
+        """
+        half_width = self.width / 2
+        half_height = self.height / 2
+        local_corners = [
+            (-half_width, -half_height),
+            (half_width, -half_height),
+            (half_width, half_height),
+            (-half_width, half_height),
+        ]
+
+        cos_a = np.cos(self.angle)
+        sin_a = np.sin(self.angle)
+        corners = []
+        for x, y in local_corners:
+            rotated_x = x * cos_a - y * sin_a
+            rotated_y = x * sin_a + y * cos_a
+            corner = self.position + np.array([rotated_x, rotated_y], dtype=float)
+            corners.append(tuple(corner))
+        return corners
     
     def get_sensor_readings(self, track):
         """
@@ -242,7 +268,7 @@ class Car:
     
     def check_collision(self, track):
         """
-        Check if the car is colliding with the track.
+        Check if the car body has left the drivable track surface.
         
         Args:
             track: Track - the track to check against
@@ -250,10 +276,15 @@ class Car:
         Returns:
             tuple: (is_colliding, collision_info)
         """
-        # Circle is cheaper than rotated-box collision and good enough for forgiving arcade handling.
-        radius = np.sqrt(self.width**2 + self.height**2) / 2
-        
-        return track.check_collision(tuple(self.position), radius)
+        if hasattr(track, 'is_on_track'):
+            points = [('center', tuple(self.position))]
+            points.extend((f'corner_{i}', corner) for i, corner in enumerate(self.get_corners()))
+            for part, point in points:
+                if not track.is_on_track(point):
+                    return True, {'type': 'off_track', 'part': part, 'point': point}
+            return False, None
+
+        return track.check_collision(tuple(self.position), 0.0)
     
     def reset(self, position, angle=0):
         """
@@ -281,30 +312,10 @@ class Car:
         # Calculate car corners
         # Car is drawn as a rectangle oriented at self.angle
         
-        # Half dimensions
-        half_width = self.width / 2
         half_height = self.height / 2
         
-        # Four corners relative to center
-        corners = [
-            (-half_width, -half_height),  # Bottom-left
-            (half_width, -half_height),   # Bottom-right
-            (half_width, half_height),     # Top-right
-            (-half_width, half_height)     # Top-left
-        ]
-        
         # Rotation turns local car shape into world-space polygon for drawing.
-        rotated_corners = []
-        for x, y in corners:
-            # Rotate
-            rotated_x = x * np.cos(self.angle) - y * np.sin(self.angle)
-            rotated_y = x * np.sin(self.angle) + y * np.cos(self.angle)
-            
-            # Translate to car position
-            screen_x = self.position[0] + rotated_x
-            screen_y = self.position[1] + rotated_y
-            
-            rotated_corners.append((screen_x, screen_y))
+        rotated_corners = self.get_corners()
         
         # Draw car body
         pygame.draw.polygon(screen, self.color, rotated_corners)

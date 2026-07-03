@@ -5,6 +5,13 @@ from game.car import Car
 from utils.config import config
 
 
+class StraightTrack:
+    track_width = 100.0
+
+    def is_on_track(self, point, tolerance=1e-6):
+        return abs(point[1]) <= (self.track_width * 0.5) + tolerance
+
+
 def test_car_does_not_turn_in_place():
     car = Car(100.0, 100.0, angle=0.0)
     initial_angle = car.angle
@@ -42,3 +49,17 @@ def test_car_turn_rate_depends_on_forward_motion():
         car.update(throttle=0.2, steering=1.0, dt=config.DT)
 
     assert abs(car.angle - angle_before) > 1e-3
+
+
+def test_collision_uses_car_body_leaving_track_not_boundary_radius():
+    track = StraightTrack()
+    car = Car(0.0, 30.0, angle=0.0)
+
+    colliding, _ = car.check_collision(track)
+    assert not colliding
+
+    car.position[1] = 40.0
+    colliding, info = car.check_collision(track)
+
+    assert colliding
+    assert info["type"] == "off_track"

@@ -18,7 +18,6 @@ C:\Users\a00537506\source\repos\tmp\PyRacer\jepa\memory.py
 C:\Users\a00537506\source\repos\tmp\PyRacer\jepa\model.py
 C:\Users\a00537506\source\repos\tmp\PyRacer\jepa\__init__.py
 C:\Users\a00537506\source\repos\tmp\PyRacer\rl\agent.py
-C:\Users\a00537506\source\repos\tmp\PyRacer\rl\environment.py
 C:\Users\a00537506\source\repos\tmp\PyRacer\rl\memory.py
 C:\Users\a00537506\source\repos\tmp\PyRacer\rl\model.py
 C:\Users\a00537506\source\repos\tmp\PyRacer\rl\__init__.py

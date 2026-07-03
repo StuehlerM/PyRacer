@@ -12,11 +12,9 @@ def _make_headless_game(seed=0):
     return game
 
 
-def test_closing_distance_to_next_checkpoint_is_rewarded(monkeypatch):
+def test_forward_spline_progress_to_next_checkpoint_is_rewarded(monkeypatch):
     game = _make_headless_game()
-    game.car.position = np.array([90.0, 0.0])
-    game.track.checkpoints = [{'index': 0, 'position': (100.0, 0.0)}]
-    game.prev_checkpoint_distance = 20.0 / np.hypot(config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+    game.prev_progress = 0.10
 
     monkeypatch.setattr(game.car, "update", lambda throttle, steering, dt: None)
     monkeypatch.setattr(game.car, "check_collision", lambda track: (False, None))
@@ -25,16 +23,17 @@ def test_closing_distance_to_next_checkpoint_is_rewarded(monkeypatch):
         game.track,
         "get_progress",
         lambda pos, last_idx_hint=None, return_idx=False, return_distance=False: (
-            (0.1, 0.0) if return_distance else 0.1
+            (0.11, 0.0) if return_distance else 0.11
         ),
     )
 
     _, reward, done, info = game.step(0)
-    distance_delta = 10.0 / np.hypot(config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
-    expected = distance_delta * config.REWARD_CHECKPOINT_APPROACH + config.REWARD_TIME_PENALTY
+    progress_delta = 0.01
+    expected = progress_delta * config.REWARD_CHECKPOINT_APPROACH
     assert reward == pytest.approx(expected)
     assert not done
     assert info["off_track"] is False
+    assert info["collision"] is False
 
 
 def test_track_aligned_forward_velocity_is_rewarded(monkeypatch):
@@ -56,13 +55,13 @@ def test_track_aligned_forward_velocity_is_rewarded(monkeypatch):
     _, reward, done, info = game.step(0)
 
     forward_reward = 0.5 * config.REWARD_FORWARD_SPEED
-    expected = config.REWARD_INITIAL + forward_reward + config.REWARD_TIME_PENALTY
+    expected = config.REWARD_INITIAL + forward_reward
     assert reward == pytest.approx(expected)
     assert not done
     assert info["forward_drive_reward"] == pytest.approx(forward_reward)
 
 
-def test_off_track_adds_penalty_and_terminates(monkeypatch):
+def test_off_track_counts_as_collision_and_terminates(monkeypatch):
     game = _make_headless_game()
 
     monkeypatch.setattr(game.car, "update", lambda throttle, steering, dt: None)
@@ -77,10 +76,11 @@ def test_off_track_adds_penalty_and_terminates(monkeypatch):
     )
 
     _, reward, done, info = game.step(0)
-    expected = config.REWARD_OFF_TRACK + config.REWARD_TIME_PENALTY
+    expected = config.REWARD_COLLISION + config.REWARD_TIME_PENALTY
     assert reward == pytest.approx(expected)
     assert done is config.OFF_TRACK_TERMINATES
     assert info["off_track"] is True
+    assert info["collision"] is True
 
 
 def test_no_progress_adds_penalty_and_terminates(monkeypatch):
@@ -111,9 +111,7 @@ def test_no_progress_adds_penalty_and_terminates(monkeypatch):
 
 def test_moving_away_from_next_checkpoint_is_penalized(monkeypatch):
     game = _make_headless_game()
-    game.car.position = np.array([80.0, 0.0])
-    game.track.checkpoints = [{'index': 0, 'position': (100.0, 0.0)}]
-    game.prev_checkpoint_distance = 10.0 / np.hypot(config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+    game.prev_progress = 0.20
 
     monkeypatch.setattr(game.car, "update", lambda throttle, steering, dt: None)
     monkeypatch.setattr(game.car, "check_collision", lambda track: (False, None))
@@ -122,15 +120,15 @@ def test_moving_away_from_next_checkpoint_is_penalized(monkeypatch):
         game.track,
         "get_progress",
         lambda pos, last_idx_hint=None, return_idx=False, return_distance=False: (
-            (game.prev_progress, 0.0) if return_distance else game.prev_progress
+            (0.19, 0.0) if return_distance else 0.19
         ),
     )
 
     _, reward, done, info = game.step(0)
 
-    distance_delta = -10.0 / np.hypot(config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+    progress_delta = -0.01
     expected = (
-        distance_delta * config.REWARD_CHECKPOINT_APPROACH * config.REWARD_WRONG_WAY_MULTIPLIER
+        progress_delta * config.REWARD_CHECKPOINT_APPROACH * config.REWARD_WRONG_WAY_MULTIPLIER
         + config.REWARD_TIME_PENALTY
     )
     assert reward == pytest.approx(expected)
