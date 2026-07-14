@@ -29,6 +29,12 @@ class RacingEnv:
         """
         # Game handles physics/rewards; env exposes standard RL API around it.
         self.game = Game(track=track, headless=not render, render_every_step=False)
+        # Game couples learning_mode/human_control to `headless`, so a rendered
+        # training run (render=True) would otherwise disable reward shaping and
+        # zero out the sensor readings. The RL env must always compute rewards and
+        # sensors and never read the keyboard, regardless of rendering.
+        self.game.learning_mode = True
+        self.game.human_control = False
         self._render = render
         self.render_every_n = max(1, int(render_every_n))
         self._render_call_count = 0

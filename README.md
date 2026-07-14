@@ -65,16 +65,21 @@ Run any entry point with `-h` for the full flag list.
 7 raycast sensors at `[-90°, -60°, -30°, 0°, 30°, 60°, 90°]` + car speed +
 `sin(heading)` + `cos(heading)` + track progress.
 
-### Actions (4 discrete)
+### Actions (9 discrete)
 
 | # | Throttle | Steering | Meaning |
 |---|----------|----------|---------|
 | 0 | 1.0  | 0.0  | Full throttle straight |
-| 1 | 0.8  | -0.8 | Accelerate + turn left |
-| 2 | 0.8  | 0.8  | Accelerate + turn right |
-| 3 | 0.3  | 0.0  | Coast straight |
+| 1 | 1.0  | -1.0 | Accelerate + turn left |
+| 2 | 1.0  | 1.0  | Accelerate + turn right |
+| 3 | 0.0  | 0.0  | Roll straight |
+| 4 | 0.0  | -1.0 | Roll + turn left |
+| 5 | 0.0  | 1.0  | Roll + turn right |
+| 6 | -1.0 | 0.0  | Brake/reverse straight |
+| 7 | -1.0 | -1.0 | Brake/reverse + turn left |
+| 8 | -1.0 | 1.0  | Brake/reverse + turn right |
 
-Learned agents are forward-only; they do not get a reverse action.
+Learned agents choose one composite action per step; each action can control throttle/brake and steering together.
 
 ### Reward (DQN + Evolution)
 
@@ -88,8 +93,16 @@ each policy's fitness. JEPA ignores it entirely.
 | Checkpoint | +5 |
 | Toward next checkpoint | +25 x normalized distance closed |
 | Forward track-aligned speed | up to +0.02 per step |
-| Collision | -50 (ends episode) |
-| Per step | -0.01 (encourages speed) |
+| Off-track (on the grass) | -1 per step, survivable for a short grace window |
+| Crash (off-screen, or off-track too long) | -50, ends the episode |
+| Stalled (no forward progress ~240 steps) | -60, ends the episode |
+| Idle per step | -0.01 (only while not moving forward) |
+
+**Off-track is a grace period, not instant death.** Running wide onto the grass is
+survivable so the car can recover mid-corner: each off-road step costs -1 and starts
+a timer. The run only ends as a crash (-50) if the car drives off the screen, or stays
+off the road past `OFF_TRACK_PATIENCE_STEPS` (~1.5 s). This is what lets the agent learn
+to actually race a lap instead of being terminated the instant a wheel leaves the road.
 
 ### DQN vs JEPA vs Evolution
 

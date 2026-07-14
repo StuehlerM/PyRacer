@@ -78,6 +78,7 @@ class Game:
         self.prev_checkpoint_distance = self._progress_remaining_to_next_checkpoint(self.prev_progress)
         self.episode_forward_progress = 0.0
         self.steps_since_progress = 0
+        self.steps_off_track = 0
         self.steps_in_episode = 0
         self.max_steps = config.MAX_STEPS_PER_EPISODE
     
@@ -107,6 +108,7 @@ class Game:
         self.prev_checkpoint_distance = self._progress_remaining_to_next_checkpoint(self.prev_progress)
         self.episode_forward_progress = 0.0
         self.steps_since_progress = 0
+        self.steps_off_track = 0
         self._render_step_counter = 0
         
         # Return initial observation
@@ -129,6 +131,12 @@ class Game:
         # Initialize new_best flag for this step
         new_best = False
         stalled = False
+        # crashed = run ended by a real terminal (off-screen or off-track too long),
+        # as opposed to just being on the grass this step (is_colliding / off_track).
+        crashed = False
+        # Time-limit truncation is tracked separately from real terminals so the
+        # learner can bootstrap correctly (see the max_steps check below).
+        truncated = False
         
         # Map action to throttle and steering
         if action is not None:
@@ -238,11 +246,23 @@ class Game:
             else:
                 self.prev_checkpoint_distance = checkpoint_distance
             
-            # Crashes happen only when the car leaves the road surface.
-            if is_colliding:
+            # Off-track handling with a grace window. Leaving the road is survivable
+            # for a short time so the car can run wide through a corner and recover:
+            # each off-road step just costs REWARD_OFF_TRACK. Two things still end the
+            # run outright: driving off the screen (out_of_bounds, unrecoverable) and
+            # staying off the road past OFF_TRACK_PATIENCE_STEPS. Both pay the one-off
+            # REWARD_COLLISION terminal penalty.
+            if off_track:
+                self.steps_off_track += 1
+                reward += config.REWARD_OFF_TRACK
+            else:
+                self.steps_off_track = 0
+
+            off_track_timeout = self.steps_off_track >= config.OFF_TRACK_PATIENCE_STEPS
+            if out_of_bounds or (config.OFF_TRACK_TERMINATES and off_track_timeout):
                 reward += config.REWARD_COLLISION
-                if config.OFF_TRACK_TERMINATES:
-                    done = True
+                done = True
+                crashed = True
 
             if self.steps_since_progress >= config.NO_PROGRESS_PATIENCE_STEPS:
                 reward += config.REWARD_NO_PROGRESS
@@ -289,8 +309,13 @@ class Game:
             self.prev_progress = current_progress
         
         # Check if episode is done
+        # Hitting the step cap is a *time-limit truncation*, not a real terminal
+        # state: the car still had future value. Flag it so training does not zero
+        # out the Bellman bootstrap. Crashes (off-screen / off-track too long) and
+        # stalls remain true terminals; merely being on the grass this step does not.
         if self.steps_in_episode >= self.max_steps:
             done = True
+            truncated = not (crashed or stalled)
         
         # Handle collision in human mode too
         if is_colliding and not self.learning_mode:
@@ -310,8 +335,9 @@ class Game:
             'lap_count': self.lap_count,
             'lap_time': self._completed_lap_time if is_finish else self.lap_time,
             'best_lap_time': self.best_lap_time,
-            'collision': is_colliding,
+            'collision': crashed,
             'off_track': off_track,
+            'steps_off_track': int(self.steps_off_track),
             'stalled': stalled,
             'steps_since_progress': self.steps_since_progress,
             'progress': current_progress,
@@ -321,6 +347,7 @@ class Game:
             'forward_progress': self.episode_forward_progress,
             'lap_completed': is_finish,
             'new_best_lap': is_finish and new_best,
+            'truncated': truncated,
             'episode_reward': self.episode_reward,
             'steps': self.steps_in_episode
         }

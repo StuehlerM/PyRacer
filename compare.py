@@ -53,6 +53,11 @@ def parse_args():
                         help='Generate matplotlib comparison plots')
     parser.add_argument('--no-plot', action='store_true',
                         help='Skip plot generation')
+    parser.add_argument('--torch-threads', type=int, default=4,
+                        help='CPU threads for PyTorch intra-op parallelism. The '
+                             'networks here are tiny, so 1-4 threads are fastest; '
+                             'the PyTorch default (all cores) is ~2x slower per '
+                             'update. Use 0 to leave the PyTorch default untouched.')
     
     return parser.parse_args()
 
@@ -366,6 +371,9 @@ def print_comparison(dqn_summary, jepa_summary):
 def main():
     """Main comparison entry point."""
     args = parse_args()
+    
+    if getattr(args, 'torch_threads', 0) and args.torch_threads > 0:
+        torch.set_num_threads(args.torch_threads)
     
     # Set seed for reproducibility
     set_seed(args.seed)

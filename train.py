@@ -82,6 +82,11 @@ def parse_args():
                         help='Random seed for reproducible runs')
     parser.add_argument('--deterministic', action='store_true',
                         help='Use deterministic torch algorithms where available')
+    parser.add_argument('--torch-threads', type=int, default=4,
+                        help='CPU threads for PyTorch intra-op parallelism. The '
+                             'networks here are tiny, so 1-4 threads are fastest; '
+                             'the PyTorch default (all cores) is ~2x slower per '
+                             'update. Use 0 to leave the PyTorch default untouched.')
     parser.add_argument('--best-window', type=int, default=50,
                         help='Moving reward window for best-model selection')
     parser.add_argument('--save-freq', type=int, default=config.SAVE_FREQ,
@@ -413,8 +418,15 @@ def train_agent(args):
                 # Take action
                 next_state, reward, done, info = env.step(action)
                 
+                # A time-limit truncation is NOT a real terminal state: the car
+                # still had future value, so storing done=True would wrongly zero
+                # the Bellman bootstrap for the last transition of every long,
+                # successful run. Only genuine terminals (collision, off-track,
+                # stall) should mask the bootstrap.
+                terminal = bool(done) and not info.get('truncated', False)
+                
                 # Remember transition
-                agent.remember(state, action, reward, next_state, done)
+                agent.remember(state, action, reward, next_state, terminal)
                 
                 # Update agent
                 loss = agent.update()
@@ -810,6 +822,12 @@ def test_agent(args):
 def main():
     """Main entry point."""
     args = parse_args()
+
+    # Cap PyTorch CPU threads: the models are small (an 11->128->128->9 MLP), so
+    # oversubscribing every core actually slows each update (~2x) due to threading
+    # overhead. This has no effect on the GPU path.
+    if getattr(args, 'torch_threads', 0) and args.torch_threads > 0:
+        torch.set_num_threads(args.torch_threads)
 
     if args.seed is not None:
         set_seed(args.seed, deterministic=args.deterministic)

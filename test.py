@@ -53,6 +53,11 @@ def parse_args():
                         help='Random seed for reproducible runs')
     parser.add_argument('--deterministic', action='store_true',
                         help='Use deterministic torch algorithms where available')
+    parser.add_argument('--torch-threads', type=int, default=4,
+                        help='CPU threads for PyTorch intra-op parallelism. The '
+                             'networks here are tiny, so 1-4 threads are fastest; '
+                             'the PyTorch default (all cores) is ~2x slower per '
+                             'update. Use 0 to leave the PyTorch default untouched.')
     parser.add_argument('--approach', type=str, default=config.DEFAULT_APPROACH,
                         choices=['dqn', 'jepa', 'evo'],
                         help='Learning approach: dqn, jepa, or evo')
@@ -415,6 +420,9 @@ def _save_results(args, *results):
 def main():
     """Main entry point."""
     args = parse_args()
+
+    if getattr(args, 'torch_threads', 0) and args.torch_threads > 0:
+        torch.set_num_threads(args.torch_threads)
 
     if args.seed is not None:
         set_seed(args.seed, deterministic=args.deterministic)

@@ -222,7 +222,7 @@ User runs: python train.py --approach jepa --episodes 1000
 
 **Key principles:**
 - State dimension: 11 (7 sensors + speed + sin(angle) + cos(angle) + progress)
-- Action dimension: 4 (see ACTIONS in config.py)
+- Action dimension: 9 (see ACTIONS in config.py)
 - Reward shaping: starts at 0, rewards moving closer to the next checkpoint and forward along the track, penalizes collisions/off-track/stalling/time
 - Double DQN: Separates action selection and evaluation
 
@@ -235,7 +235,7 @@ User runs: python train.py --approach jepa --episodes 1000
 - `utils/config.py` - JEPA hyperparameters (JEPA_* prefix)
 
 **Key principles:**
-- Same state/action dimensions as RL (11-dim state, 4 discrete actions)
+- Same state/action dimensions as RL (11-dim state, 9 discrete actions)
 - No reward signal used for learning (only for logging/comparison)
 - World model trained via self-supervised prediction in latent space
 - VICReg prevents representational collapse (all states → same embedding)
@@ -287,14 +287,19 @@ state = [
 # From utils/config.py
 ACTIONS = {
     0: {'throttle': 1.0,  'steering': 0.0},   # Accelerate straight
-    1: {'throttle': 0.8,  'steering': -0.8},  # Accelerate + turn left
-    2: {'throttle': 0.8,  'steering': 0.8},   # Accelerate + turn right
-    3: {'throttle': 0.3,  'steering': 0.0},   # Coast straight
+    1: {'throttle': 1.0,  'steering': -1.0},  # Accelerate + turn left
+    2: {'throttle': 1.0,  'steering': 1.0},   # Accelerate + turn right
+    3: {'throttle': 0.0,  'steering': 0.0},   # Roll straight
+    4: {'throttle': 0.0,  'steering': -1.0},  # Roll + turn left
+    5: {'throttle': 0.0,  'steering': 1.0},   # Roll + turn right
+    6: {'throttle': -1.0, 'steering': 0.0},   # Brake/reverse straight
+    7: {'throttle': -1.0, 'steering': -1.0},  # Brake/reverse + turn left
+    8: {'throttle': -1.0, 'steering': 1.0},   # Brake/reverse + turn right
 }
 ```
 
 **Action mapping:**
-- `throttle`: 0.0 (no throttle) to 1.0 (full throttle); learned agents cannot reverse
+- `throttle`: -1.0 (brake/reverse) to 1.0 (full throttle), 0.0 means roll
 - `steering`: -1.0 (left) to 1.0 (right)
 
 ### 3. Reward Function
@@ -329,25 +334,42 @@ if lap_completed:
         lap_reward *= 1.5  # Bonus for new best
     reward += lap_reward
 
-# Collision penalty
-if collision:
-    reward += config.REWARD_COLLISION  # -50
+# Off-track handling: a GRACE PERIOD, not instant death.
+# Running wide onto the grass is survivable for a short while so the car can
+# recover mid-corner (like a real race). Every step with any part of the car off
+# the road costs a small per-step penalty and advances an off-track timer.
+if off_track:                     # off the road but still on screen
+    steps_off_track += 1
+    reward += config.REWARD_OFF_TRACK     # -1.0 per step (recoverable)
+else:
+    steps_off_track = 0                    # back on the road resets the timer
+
+# Crash out (one-off terminal penalty) when the car is unrecoverable: it either
+# drove off the screen entirely, or stayed off the road past the grace window.
+if out_of_bounds or (config.OFF_TRACK_TERMINATES and
+                     steps_off_track >= config.OFF_TRACK_PATIENCE_STEPS):
+    reward += config.REWARD_COLLISION      # -50 (terminal crash)
     done = True
 
-# Off-track penalty
-if off_track:
-    reward += config.REWARD_OFF_TRACK  # -25
-    if config.OFF_TRACK_TERMINATES:
-        done = True
-
-# Stall penalty
+# Stall penalty: no meaningful forward progress for too long
 if no_progress_for_too_long:
-    reward += config.REWARD_NO_PROGRESS  # -60
+    reward += config.REWARD_NO_PROGRESS    # -60 (terminal)
     done = True
 
-# Time penalty (per step)
-reward += config.REWARD_TIME_PENALTY  # -0.01
+# Time penalty (per step) — applied ONLY while idle / not moving forward, so
+# genuine forward driving is never net-penalised for taking time.
+if checkpoint_approach_reward <= 0 and forward_drive_reward <= 0:
+    reward += config.REWARD_TIME_PENALTY   # -0.01
 ```
+
+**Why a grace period?** The goal of the project is a car that can actually *race*.
+Ending the episode the instant a wheel touches the grass makes that nearly
+impossible to learn — the agent never sees "I ran wide, then recovered." Instead,
+off-track is a slow, penalised state (`REWARD_OFF_TRACK` per step) that only becomes
+a terminal crash (`REWARD_COLLISION`) if the car drives off-screen or loiters off
+the road for `OFF_TRACK_PATIENCE_STEPS` (~1.5 s). Because that off-track window
+(90 steps) is shorter than the stall window (240 steps), a car sitting on the grass
+is ended by the off-track timeout first.
 
 ### 4. DQN Algorithm Flow
 
@@ -442,7 +464,7 @@ for each segment (p0, p1, p2, p3):
 # In utils/config.py
 ACTIONS = {
     ...
-    4: {'throttle': 0.3, 'steering': -0.5},  # Coast left
+    4: {'throttle': 0.0, 'steering': -0.5},  # Roll left
 }
 ACTION_DIM = 5  # Was 4, now 5
 ```
@@ -640,7 +662,7 @@ SENSOR_ANGLES = [-90, -60, -30, 0, 30, 60, 90]  # Degrees
 ```python
 STATE_DIM = 11             # 7 sensors + speed + sin(angle) + cos(angle) + progress
 STATE_VERSION = 2
-ACTION_DIM = 4
+ACTION_DIM = 9
 HIDDEN_DIM = 128
 LEARNING_RATE = 0.001
 GAMMA = 0.99              # Discount factor
@@ -659,15 +681,16 @@ POLYAK_TAU = 0.005
 ```python
 REWARD_LAP_COMPLETE = 200.0
 REWARD_CHECKPOINT = 5.0
-REWARD_COLLISION = -50.0
-REWARD_TIME_PENALTY = -0.01  # Per step
+REWARD_COLLISION = -50.0  # Terminal crash: drove off-screen OR off-track past the grace window
+REWARD_TIME_PENALTY = -0.01  # Per step, only while idle / not moving forward
 REWARD_INITIAL = 0.0
 REWARD_CHECKPOINT_APPROACH = 25.0  # Per normalized distance closed to next checkpoint
 REWARD_PROGRESS = REWARD_CHECKPOINT_APPROACH  # Backward-compatible alias
 REWARD_FORWARD_SPEED = 0.02  # Max per-step reward for full-speed track-aligned forward motion
 REWARD_WRONG_WAY_MULTIPLIER = 2.0
-REWARD_OFF_TRACK = -25.0
-OFF_TRACK_TERMINATES = True
+REWARD_OFF_TRACK = -1.0  # Per-step penalty while off the road (grace period, recoverable)
+OFF_TRACK_PATIENCE_STEPS = 90  # ~1.5s off-track before the run ends as a crash
+OFF_TRACK_TERMINATES = True  # If True, exceeding the grace window ends the episode
 REWARD_NO_PROGRESS = -60.0
 NO_PROGRESS_PATIENCE_STEPS = 240
 MIN_PROGRESS_DELTA = 1e-4

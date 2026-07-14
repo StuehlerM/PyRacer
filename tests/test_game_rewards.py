@@ -61,7 +61,7 @@ def test_track_aligned_forward_velocity_is_rewarded(monkeypatch):
     assert info["forward_drive_reward"] == pytest.approx(forward_reward)
 
 
-def test_off_track_counts_as_collision_and_terminates(monkeypatch):
+def test_off_track_applies_grace_penalty_without_terminating(monkeypatch):
     game = _make_headless_game()
 
     monkeypatch.setattr(game.car, "update", lambda throttle, steering, dt: None)
@@ -75,12 +75,49 @@ def test_off_track_counts_as_collision_and_terminates(monkeypatch):
         ),
     )
 
+    # A single step off the road is survivable: the car pays the per-step off-track
+    # penalty (plus the idle time penalty) but the run keeps going so it can recover.
     _, reward, done, info = game.step(0)
-    expected = config.REWARD_COLLISION + config.REWARD_TIME_PENALTY
+    expected = config.REWARD_OFF_TRACK + config.REWARD_TIME_PENALTY
     assert reward == pytest.approx(expected)
-    assert done is config.OFF_TRACK_TERMINATES
+    assert not done
+    assert info["off_track"] is True
+    assert info["collision"] is False
+    assert info["steps_off_track"] == 1
+
+
+def test_off_track_too_long_terminates_as_crash(monkeypatch):
+    game = _make_headless_game()
+
+    monkeypatch.setattr(game.car, "update", lambda throttle, steering, dt: None)
+    monkeypatch.setattr(game.car, "check_collision", lambda track: (False, None))
+    monkeypatch.setattr(game.track, "check_checkpoint", lambda pos, last_idx: (last_idx, False))
+    monkeypatch.setattr(
+        game.track,
+        "get_progress",
+        lambda pos, last_idx_hint=None, return_idx=False, return_distance=False: (
+            (game.prev_progress, game.track.track_width) if return_distance else game.prev_progress
+        ),
+    )
+
+    # Staying off the road past the grace window ends the run as a crash. The
+    # off-track patience (90 steps) is shorter than the stall patience (240), so
+    # the off-track timeout is what terminates here.
+    done = False
+    reward = 0.0
+    info = {}
+    for _ in range(config.OFF_TRACK_PATIENCE_STEPS):
+        _, reward, done, info = game.step(0)
+
+    expected = (
+        config.REWARD_OFF_TRACK + config.REWARD_COLLISION + config.REWARD_TIME_PENALTY
+    )
+    assert reward == pytest.approx(expected)
+    assert done is True
     assert info["off_track"] is True
     assert info["collision"] is True
+    assert info["stalled"] is False
+    assert info["steps_off_track"] == config.OFF_TRACK_PATIENCE_STEPS
 
 
 def test_no_progress_adds_penalty_and_terminates(monkeypatch):

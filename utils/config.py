@@ -65,8 +65,8 @@ class Config:
     # Observation = sensor distances plus compact car state, enough to drive without raw image input.
     STATE_DIM = NUM_SENSORS + 4  # Sensors + speed + sin(angle) + cos(angle) + progress
     STATE_VERSION = 2  # Bump when state vector layout changes
-    # Four forward-only actions keep control problem simple and prevent learned policies from reversing.
-    ACTION_DIM = 4  # Number of discrete actions
+    # Composite actions pair longitudinal control with steering so learned policies can brake or roll through turns.
+    ACTION_DIM = 9  # Number of discrete actions
     HIDDEN_DIM = 128
     LEARNING_RATE = 0.001
     # Gamma near 1.0 values future lap progress almost as much as immediate reward.
@@ -105,14 +105,23 @@ class Config:
     # Reward scale makes finishing lap worth much more than risky wall hits or tiny per-step shaping.
     REWARD_LAP_COMPLETE = 200.0
     REWARD_CHECKPOINT = 5.0
+    # One-off terminal penalty. Applied when the car crashes out of the run, which
+    # here means either driving off the screen (unrecoverable) or staying off the
+    # road past the off-track grace window (see OFF_TRACK_PATIENCE_STEPS below).
     REWARD_COLLISION = -50.0
     REWARD_TIME_PENALTY = -0.01  # Per step penalty to encourage speed
     REWARD_CHECKPOINT_APPROACH = 25.0  # Reward per normalized distance closed to next checkpoint
     REWARD_PROGRESS = REWARD_CHECKPOINT_APPROACH  # Backward-compatible alias
     REWARD_FORWARD_SPEED = 0.02  # Max per-step reward for full-speed track-aligned forward motion
     REWARD_WRONG_WAY_MULTIPLIER = 2.0  # Extra penalty multiplier when progress goes backwards
-    REWARD_OFF_TRACK = -25.0  # Penalty applied when car center leaves road width
-    OFF_TRACK_TERMINATES = True  # End episode immediately when car leaves track
+    # Off-track handling models real racing: briefly running wide onto the grass is
+    # survivable but slow, while sitting off the track ends the run. Rather than
+    # ending the episode the instant the car leaves the road, we open a short grace
+    # window. Each step spent off the road costs REWARD_OFF_TRACK; if the car is
+    # still off the road after OFF_TRACK_PATIENCE_STEPS it crashes out (REWARD_COLLISION).
+    REWARD_OFF_TRACK = -1.0  # Per-step penalty while any part of the car is off the road
+    OFF_TRACK_PATIENCE_STEPS = 90  # ~1.5s at 60 FPS off-track before the run ends
+    OFF_TRACK_TERMINATES = True  # If True, exceeding the grace window ends the episode
     REWARD_NO_PROGRESS = -60.0  # Terminal penalty when policy stalls instead of racing
     NO_PROGRESS_PATIENCE_STEPS = 240  # ~4 seconds at 60 FPS with no meaningful forward progress
     MIN_PROGRESS_DELTA = 1e-4  # Smallest forward progress that resets no-progress patience
@@ -175,12 +184,17 @@ class Config:
     # =====================
     # Action Mapping
     # =====================
-    # Action set favors common racing choices while keeping learned policies forward-only.
+    # Action set covers throttle/brake/roll with straight/left/right steering.
     ACTIONS = {
-        0: {'throttle': 1.0, 'steering': 0.0},      # Accelerate straight
-        1: {'throttle': 0.8, 'steering': -0.8},    # Accelerate + turn left
-        2: {'throttle': 0.8, 'steering': 0.8},     # Accelerate + turn right
-        3: {'throttle': 0.3, 'steering': 0.0},     # Coast straight
+        0: {'throttle': 1.0, 'steering': 0.0},     # Accelerate straight
+        1: {'throttle': 1.0, 'steering': -1.0},    # Accelerate + turn left
+        2: {'throttle': 1.0, 'steering': 1.0},     # Accelerate + turn right
+        3: {'throttle': 0.0, 'steering': 0.0},     # Roll straight
+        4: {'throttle': 0.0, 'steering': -1.0},    # Roll + turn left
+        5: {'throttle': 0.0, 'steering': 1.0},     # Roll + turn right
+        6: {'throttle': -1.0, 'steering': 0.0},    # Brake/reverse straight
+        7: {'throttle': -1.0, 'steering': -1.0},   # Brake/reverse + turn left
+        8: {'throttle': -1.0, 'steering': 1.0},    # Brake/reverse + turn right
     }
     
     # =====================
