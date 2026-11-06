@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PyRacer &middot; Mistral Chat</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e6e8ee;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .chat {
+      width: 100%;
+      max-width: 720px;
+      display: flex;
+      flex-direction: column;
+      padding: 1.5rem 1rem;
+      gap: 1rem;
+    }
+    h1 { font-size: 1.25rem; margin: 0; color: #ffb86b; }
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      padding: 0.5rem 0;
+    }
+    .msg {
+      max-width: 80%;
+      padding: 0.6rem 0.9rem;
+      border-radius: 0.75rem;
+      white-space: pre-wrap;
+      line-height: 1.4;
+    }
+    .msg.user { align-self: flex-end; background: #2b4acb; }
+    .msg.assistant { align-self: flex-start; background: #1d212b; }
+    .msg.error { align-self: flex-start; background: #5b1f1f; }
+    #composer { display: flex; gap: 0.5rem; }
+    #input {
+      flex: 1;
+      padding: 0.7rem 0.9rem;
+      border-radius: 0.5rem;
+      border: 1px solid #333a4a;
+      background: #171a22;
+      color: inherit;
+      font-size: 1rem;
+    }
+    button {
+      padding: 0.7rem 1.2rem;
+      border: none;
+      border-radius: 0.5rem;
+      background: #ffb86b;
+      color: #0f1117;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+  </style>
+</head>
+<body>
+  <main class="chat">
+    <h1>PyRacer &middot; Mistral Chat (mistral-small-latest)</h1>
+    <div id="messages" class="messages"></div>
+    <form id="composer">
+      <input id="input" type="text" placeholder="Ask something..." autocomplete="off" />
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+  <script>
+    const messagesEl = document.getElementById('messages');
+    const form = document.getElementById('composer');
+    const input = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+
+    const history = [
+      { role: 'system', content: 'You are a concise assistant in the PyRacer demo web app.' },
+    ];
+
+    function addMessage(role, text) {
+      const el = document.createElement('div');
+      el.className = 'msg ' + role;
+      el.textContent = text;
+      messagesEl.appendChild(el);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return el;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      sendBtn.disabled = true;
+      addMessage('user', text);
+      history.push({ role: 'user', content: text });
+      const pending = addMessage('assistant', '...');
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: history }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        pending.textContent = data.reply;
+        history.push({ role: 'assistant', content: data.reply });
+      } catch (err) {
+        pending.className = 'msg error';
+        pending.textContent = 'Error: ' + err.message;
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    });
+  </script>
+</body>
+</html>
